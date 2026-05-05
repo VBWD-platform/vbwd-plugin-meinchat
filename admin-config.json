@@ -1,0 +1,32 @@
+{
+  "tabs": [
+    {
+      "id": "general",
+      "label": "General",
+      "fields": [
+        {
+          "key": "debug_mode",
+          "label": "Debug mode",
+          "component": "checkbox",
+          "description": "Enable verbose debug logging. Disable in production (live mode)."
+        },
+        {
+          "key": "max_message_length",
+          "label": "Max message length (characters)",
+          "component": "input",
+          "inputType": "number",
+          "min": 100,
+          "max": 20000
+        },
+        {
+          "key": "image_max_size_bytes",
+          "label": "Max image attachment size (bytes)",
+          "component": "input",
+          "inputType": "number",
+          "min": 1024,
+          "max": 52428800
+        }
+      ]
+    }
+  ]
+}

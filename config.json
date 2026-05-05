@@ -1,0 +1,17 @@
+{
+  "debug_mode": {
+    "type": "boolean",
+    "default": false,
+    "description": "Enable verbose debug logging for the meinchat backend plugin (live mode when off)"
+  },
+  "max_message_length": {
+    "type": "integer",
+    "default": 4000,
+    "description": "Maximum number of characters allowed in a single chat message"
+  },
+  "image_max_size_bytes": {
+    "type": "integer",
+    "default": 5242880,
+    "description": "Maximum allowed image attachment size in bytes (default: 5 MB)"
+  }
+}
