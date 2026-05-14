@@ -51,9 +51,7 @@ def upgrade():
             name="ck_user_contact_no_self",
         ),
     )
-    op.create_index(
-        "ix_user_contact_owner_user_id", "user_contact", ["owner_user_id"]
-    )
+    op.create_index("ix_user_contact_owner_user_id", "user_contact", ["owner_user_id"])
     op.create_index(
         "ix_user_contact_contact_user_id", "user_contact", ["contact_user_id"]
     )
@@ -67,9 +65,7 @@ def downgrade():
 
 def _table_exists(conn, table_name: str) -> bool:
     result = conn.execute(
-        sa.text(
-            "SELECT 1 FROM information_schema.tables WHERE table_name = :name"
-        ),
+        sa.text("SELECT 1 FROM information_schema.tables WHERE table_name = :name"),
         {"name": table_name},
     )
     return result.scalar() is not None

@@ -54,9 +54,7 @@ class ContactService:
             raise ContactSelfAddError("cannot add yourself")
 
         if self._repo.find_by_owner_and_contact(owner_user_id, target.user_id):
-            raise ContactAlreadyExistsError(
-                f"'{nickname}' is already in your contacts"
-            )
+            raise ContactAlreadyExistsError(f"'{nickname}' is already in your contacts")
 
         row = UserContact()
         row.owner_user_id = owner_user_id

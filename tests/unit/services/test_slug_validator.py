@@ -38,14 +38,14 @@ class TestCharacterSet:
     @pytest.mark.parametrize(
         "nickname",
         [
-            "Alice",           # uppercase
-            "1alice",          # leading digit
-            "-alice",          # leading dash
-            "_alice",          # leading underscore
-            "alice.v2",        # dot
-            "alice v2",        # space
-            "alice@mail",      # at sign
-            "alice/bob",       # slash
+            "Alice",  # uppercase
+            "1alice",  # leading digit
+            "-alice",  # leading dash
+            "_alice",  # leading underscore
+            "alice.v2",  # dot
+            "alice v2",  # space
+            "alice@mail",  # at sign
+            "alice/bob",  # slash
         ],
     )
     def test_rejects_bad_characters(self, nickname):

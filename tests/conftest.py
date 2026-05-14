@@ -13,9 +13,7 @@ import pytest
 
 # Ensure the project root is on sys.path so plugin modules import as
 # `plugins.meinchat.…` regardless of where pytest was invoked from.
-sys.path.insert(
-    0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../../.."))
-)
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../../..")))
 
 os.environ.setdefault("FLASK_ENV", "testing")
 os.environ.setdefault("TESTING", "true")

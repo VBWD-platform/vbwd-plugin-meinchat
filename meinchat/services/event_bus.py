@@ -35,9 +35,7 @@ class _Subscription:
         if not self._closed:
             self._queue.put(event)
 
-    def iter_events(
-        self, timeout: Optional[float] = None
-    ) -> Iterator[Dict[str, Any]]:
+    def iter_events(self, timeout: Optional[float] = None) -> Iterator[Dict[str, Any]]:
         """Yield queued events until `timeout` seconds pass with no event.
 
         If `heartbeat_seconds` was set at subscribe time, yields a

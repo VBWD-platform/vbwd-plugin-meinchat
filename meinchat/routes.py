@@ -20,7 +20,7 @@ from flask import (
 from vbwd.extensions import db
 from vbwd.middleware.auth import require_admin, require_auth, require_permission
 
-from plugins.cms.src.services.file_storage import LocalFileStorage
+from vbwd.interfaces.file_storage import LocalFileStorage
 
 from plugins.meinchat.meinchat.repositories.contact_repository import (
     ContactRepository,
@@ -145,6 +145,7 @@ def _rate_limiter() -> RateLimiter:
         return cached
     try:
         from vbwd.utils.redis_client import redis_client
+
         redis_client.client.ping()
         backend: Any = RedisCounterBackend(redis_client.client)
     except Exception:
@@ -183,6 +184,7 @@ def _event_bus():
         return cached
     try:
         from vbwd.utils.redis_client import redis_client
+
         redis_client.client.ping()
         bus = RedisEventBus(redis_client.client)
     except Exception:
@@ -249,6 +251,7 @@ def _serialize_conversation_for_user(conv, user_id) -> dict:
 
 # ── /api/v1/nickname/* ──────────────────────────────────────────────────────
 
+
 @meinchat_bp.route("/api/v1/nickname/me", methods=["GET"])
 @require_auth
 def get_my_nickname():
@@ -292,8 +295,7 @@ def search_nicknames():
         jsonify(
             {
                 "items": [
-                    {"nickname": r.nickname, "user_id": str(r.user_id)}
-                    for r in rows
+                    {"nickname": r.nickname, "user_id": str(r.user_id)} for r in rows
                 ]
             }
         ),
@@ -312,6 +314,7 @@ def get_nickname_card(nickname: str):
 
 
 # ── /api/v1/contacts/* ──────────────────────────────────────────────────────
+
 
 @meinchat_bp.route("/api/v1/contacts", methods=["GET"])
 @require_auth
@@ -391,6 +394,7 @@ def remove_contact(contact_id: str):
 
 # ── /api/v1/messaging/* ─────────────────────────────────────────────────────
 
+
 @meinchat_bp.route("/api/v1/messaging/conversations", methods=["GET"])
 @require_auth
 def list_conversations():
@@ -462,9 +466,7 @@ def send_message(conv_id: str):
     data = request.get_json(silent=True) or {}
     body = data.get("body", "")
     try:
-        msg = _message_service().send_text(
-            conv_id, sender_user_id=g.user_id, body=body
-        )
+        msg = _message_service().send_text(conv_id, sender_user_id=g.user_id, body=body)
         db.session.commit()
         return jsonify(msg.to_dict()), 201
     except ConversationNotFoundError as exc:
@@ -533,9 +535,7 @@ def send_attachment_message(conv_id: str):
         return jsonify({"error": str(exc)}), 400
 
 
-@meinchat_bp.route(
-    "/api/v1/messaging/conversations/<conv_id>/read", methods=["POST"]
-)
+@meinchat_bp.route("/api/v1/messaging/conversations/<conv_id>/read", methods=["POST"])
 @require_auth
 def mark_conversation_read(conv_id: str):
     try:
@@ -567,6 +567,7 @@ def delete_message(conv_id: str, msg_id: str):
 
 # ── SSE: instant message delivery ───────────────────────────────────────────
 
+
 @meinchat_bp.route("/api/v1/messaging/stream/token", methods=["POST"])
 @require_auth
 def mint_stream_token():
@@ -576,8 +577,7 @@ def mint_stream_token():
         jsonify(
             {
                 "stream_token": token,
-                "ttl_seconds": int(cfg.get("sse_stream_token_ttl_minutes", 60))
-                * 60,
+                "ttl_seconds": int(cfg.get("sse_stream_token_ttl_minutes", 60)) * 60,
             }
         ),
         200,
@@ -604,9 +604,7 @@ def sse_stream():
     cfg = _meinchat_config()
     heartbeat_s = float(cfg.get("sse_heartbeat_seconds", 20))
     bus = _event_bus()
-    subscription = bus.subscribe(
-        f"user:{user_id}", heartbeat_seconds=heartbeat_s
-    )
+    subscription = bus.subscribe(f"user:{user_id}", heartbeat_seconds=heartbeat_s)
 
     @stream_with_context
     def generate():
@@ -632,6 +630,7 @@ def sse_stream():
 
 
 # ── /api/v1/token-transfer/* ────────────────────────────────────────────────
+
 
 @meinchat_bp.route("/api/v1/token-transfer", methods=["POST"])
 @require_auth
@@ -692,6 +691,7 @@ def list_token_transfers():
 
 # ── /api/v1/admin/meinchat/* ────────────────────────────────────────────────
 
+
 @meinchat_bp.route("/api/v1/admin/meinchat/nicknames", methods=["GET"])
 @require_auth
 @require_admin
@@ -722,9 +722,7 @@ def admin_list_nicknames():
     )
 
 
-@meinchat_bp.route(
-    "/api/v1/admin/meinchat/nicknames/<user_id>/ban", methods=["POST"]
-)
+@meinchat_bp.route("/api/v1/admin/meinchat/nicknames/<user_id>/ban", methods=["POST"])
 @require_auth
 @require_admin
 @require_permission("meinchat.nicknames.moderate")
@@ -742,9 +740,7 @@ def admin_ban_nickname(user_id: str):
         return jsonify({"error": str(exc)}), 404
 
 
-@meinchat_bp.route(
-    "/api/v1/admin/meinchat/nicknames/<user_id>/unban", methods=["POST"]
-)
+@meinchat_bp.route("/api/v1/admin/meinchat/nicknames/<user_id>/unban", methods=["POST"])
 @require_auth
 @require_admin
 @require_permission("meinchat.nicknames.moderate")
@@ -758,9 +754,7 @@ def admin_unban_nickname(user_id: str):
         return jsonify({"error": str(exc)}), 404
 
 
-@meinchat_bp.route(
-    "/api/v1/admin/meinchat/conversations/<conv_id>", methods=["GET"]
-)
+@meinchat_bp.route("/api/v1/admin/meinchat/conversations/<conv_id>", methods=["GET"])
 @require_auth
 @require_admin
 @require_permission("meinchat.conversations.inspect")
@@ -813,9 +807,8 @@ def admin_list_transfers():
         TokenTransferRecord,
     )
 
-    query = (
-        db.session.query(TokenTransferRecord)
-        .order_by(TokenTransferRecord.executed_at.desc())
+    query = db.session.query(TokenTransferRecord).order_by(
+        TokenTransferRecord.executed_at.desc()
     )
     total = query.count()
     rows = query.offset((page - 1) * per_page).limit(per_page).all()
@@ -828,9 +821,7 @@ def admin_list_transfers():
         return {
             **record.to_dict(),
             "sender_nickname": sender_nick.nickname if sender_nick else None,
-            "recipient_nickname": (
-                recipient_nick.nickname if recipient_nick else None
-            ),
+            "recipient_nickname": (recipient_nick.nickname if recipient_nick else None),
         }
 
     return (

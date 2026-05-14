@@ -21,19 +21,14 @@ class MessageRepository:
     ) -> List[Message]:
         """Return up to `limit` messages, newest first. If `before` is set,
         returns messages older than that message's `sent_at`."""
-        query = (
-            self._session.query(Message)
-            .filter(Message.conversation_id == conversation_id)
+        query = self._session.query(Message).filter(
+            Message.conversation_id == conversation_id
         )
         if before is not None:
             pivot = self._session.query(Message).get(before)
             if pivot is not None:
                 query = query.filter(Message.sent_at < pivot.sent_at)
-        return (
-            query.order_by(Message.sent_at.desc())
-            .limit(min(limit, 200))
-            .all()
-        )
+        return query.order_by(Message.sent_at.desc()).limit(min(limit, 200)).all()
 
     def save(self, row: Message) -> Message:
         self._session.add(row)

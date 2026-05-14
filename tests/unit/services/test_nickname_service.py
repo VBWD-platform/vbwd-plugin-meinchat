@@ -28,7 +28,9 @@ def service(repo):
     return NicknameService(repo=repo, ban_grace_period_days=30)
 
 
-def _nickname_row(user_id, nickname, *, banned=False, banned_at=None, search_hidden=False):
+def _nickname_row(
+    user_id, nickname, *, banned=False, banned_at=None, search_hidden=False
+):
     from plugins.meinchat.meinchat.models.user_nickname import UserNickname
 
     row = UserNickname()

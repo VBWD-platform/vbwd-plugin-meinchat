@@ -49,6 +49,7 @@ class MeinchatPlugin(BasePlugin):
 
     def get_blueprint(self) -> Optional["Blueprint"]:
         from plugins.meinchat.meinchat.routes import meinchat_bp
+
         return meinchat_bp
 
     def get_url_prefix(self) -> Optional[str]:

@@ -28,6 +28,7 @@ def _ensure_app_context():
     sys.path.insert(0, "/app")
     os.environ.setdefault("FLASK_ENV", "development")
     from vbwd.app import create_app
+
     app = create_app()
     return app
 

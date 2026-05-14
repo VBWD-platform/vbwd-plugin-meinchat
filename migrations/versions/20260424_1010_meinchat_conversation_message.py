@@ -48,9 +48,7 @@ def upgrade():
             ),
             sa.Column("created_at", sa.DateTime(), nullable=False),
             sa.Column("updated_at", sa.DateTime(), nullable=False),
-            sa.Column(
-                "version", sa.Integer(), nullable=False, server_default="0"
-            ),
+            sa.Column("version", sa.Integer(), nullable=False, server_default="0"),
             sa.PrimaryKeyConstraint("id"),
             sa.UniqueConstraint(
                 "participant_low_id",
@@ -105,13 +103,9 @@ def upgrade():
             sa.Column("system_kind", sa.String(32), nullable=True),
             sa.Column("created_at", sa.DateTime(), nullable=False),
             sa.Column("updated_at", sa.DateTime(), nullable=False),
-            sa.Column(
-                "version", sa.Integer(), nullable=False, server_default="0"
-            ),
+            sa.Column("version", sa.Integer(), nullable=False, server_default="0"),
             sa.PrimaryKeyConstraint("id"),
-            sa.CheckConstraint(
-                "length(body) <= 4000", name="ck_message_body_len"
-            ),
+            sa.CheckConstraint("length(body) <= 4000", name="ck_message_body_len"),
         )
         op.create_index(
             "ix_message_conversation_sent",
@@ -123,20 +117,14 @@ def upgrade():
 def downgrade():
     op.drop_index("ix_message_conversation_sent", table_name="message")
     op.drop_table("message")
-    op.drop_index(
-        "ix_conversation_participant_high_id", table_name="conversation"
-    )
-    op.drop_index(
-        "ix_conversation_participant_low_id", table_name="conversation"
-    )
+    op.drop_index("ix_conversation_participant_high_id", table_name="conversation")
+    op.drop_index("ix_conversation_participant_low_id", table_name="conversation")
     op.drop_table("conversation")
 
 
 def _table_exists(conn, table_name: str) -> bool:
     result = conn.execute(
-        sa.text(
-            "SELECT 1 FROM information_schema.tables WHERE table_name = :name"
-        ),
+        sa.text("SELECT 1 FROM information_schema.tables WHERE table_name = :name"),
         {"name": table_name},
     )
     return result.scalar() is not None

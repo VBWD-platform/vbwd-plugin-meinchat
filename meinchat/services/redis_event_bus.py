@@ -27,9 +27,7 @@ class _RedisSubscription:
     def channel(self) -> str:
         return self._channel
 
-    def iter_events(
-        self, timeout: Optional[float] = None
-    ) -> Iterator[Dict[str, Any]]:
+    def iter_events(self, timeout: Optional[float] = None) -> Iterator[Dict[str, Any]]:
         import time
 
         hb = self._heartbeat_seconds

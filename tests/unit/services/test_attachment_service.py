@@ -4,7 +4,7 @@ import io
 import pytest
 from PIL import Image
 
-from plugins.cms.src.services.file_storage import InMemoryFileStorage
+from vbwd.interfaces.file_storage import InMemoryFileStorage
 from plugins.meinchat.meinchat.services.attachment_service import (
     AttachmentService,
     AttachmentTooLargeError,
@@ -84,9 +84,7 @@ class TestRejections:
 
 class TestExifStripping:
     def test_reencoded_image_has_no_exif(self, service, storage):
-        result = service.process_and_store(
-            _jpeg_with_exif_bytes(), owner_user_id="u"
-        )
+        result = service.process_and_store(_jpeg_with_exif_bytes(), owner_user_id="u")
         stored = storage.read(result["_storage_paths"]["original"])
         img = Image.open(io.BytesIO(stored))
         # WebP re-encode drops EXIF by default; confirm it's either empty
@@ -103,8 +101,6 @@ class TestDelete:
         assert storage.exists(orig_path)
         assert storage.exists(thumb_path)
 
-        service.delete_attachment(
-            original_path=orig_path, thumb_path=thumb_path
-        )
+        service.delete_attachment(original_path=orig_path, thumb_path=thumb_path)
         assert not storage.exists(orig_path)
         assert not storage.exists(thumb_path)

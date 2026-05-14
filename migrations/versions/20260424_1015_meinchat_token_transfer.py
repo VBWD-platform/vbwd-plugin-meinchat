@@ -56,20 +56,14 @@ def upgrade():
 
 
 def downgrade():
-    op.drop_index(
-        "ix_token_transfer_recipient_executed", table_name="token_transfer"
-    )
-    op.drop_index(
-        "ix_token_transfer_sender_executed", table_name="token_transfer"
-    )
+    op.drop_index("ix_token_transfer_recipient_executed", table_name="token_transfer")
+    op.drop_index("ix_token_transfer_sender_executed", table_name="token_transfer")
     op.drop_table("token_transfer")
 
 
 def _table_exists(conn, table_name: str) -> bool:
     result = conn.execute(
-        sa.text(
-            "SELECT 1 FROM information_schema.tables WHERE table_name = :name"
-        ),
+        sa.text("SELECT 1 FROM information_schema.tables WHERE table_name = :name"),
         {"name": table_name},
     )
     return result.scalar() is not None

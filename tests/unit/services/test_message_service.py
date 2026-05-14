@@ -91,7 +91,7 @@ class TestSendText:
         service.send_text(conv.id, sender_user_id=alice, body="hi")
 
         total_unread = conv.unread_low_count + conv.unread_high_count
-        assert total_unread == 1   # bob gets +1, alice stays at 0
+        assert total_unread == 1  # bob gets +1, alice stays at 0
 
     def test_rejects_non_member(self, service, conv_repo, message_repo):
         alice, bob = uuid4(), uuid4()
@@ -112,9 +112,7 @@ class TestSendText:
         with pytest.raises(ValueError):
             service.send_text(conv.id, sender_user_id=alice, body="   ")
 
-    def test_rejects_body_over_4000_chars(
-        self, service, conv_repo, nickname_repo
-    ):
+    def test_rejects_body_over_4000_chars(self, service, conv_repo, nickname_repo):
         alice, bob = uuid4(), uuid4()
         conv = _conversation(alice, bob)
         conv_repo.find_by_id.return_value = conv

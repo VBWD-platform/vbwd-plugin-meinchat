@@ -9,7 +9,7 @@ from typing import Any, Dict, Optional
 
 from PIL import Image
 
-from plugins.cms.src.services.file_storage import IFileStorage
+from vbwd.interfaces.file_storage import IFileStorage
 
 
 class AttachmentTooLargeError(ValueError):
@@ -40,21 +40,15 @@ class AttachmentService:
         self._max_dim_px = max_dim_px
         self._prefix = path_prefix.strip("/")
 
-    def process_and_store(
-        self, raw: bytes, *, owner_user_id: Any
-    ) -> Dict[str, Any]:
+    def process_and_store(self, raw: bytes, *, owner_user_id: Any) -> Dict[str, Any]:
         if len(raw) > self._max_bytes:
-            raise AttachmentTooLargeError(
-                f"attachment exceeds {self._max_bytes} bytes"
-            )
+            raise AttachmentTooLargeError(f"attachment exceeds {self._max_bytes} bytes")
 
         try:
             img = Image.open(io.BytesIO(raw))
             img.load()  # force actual decode — catches truncated / malformed files
         except Exception as exc:
-            raise AttachmentTypeNotAllowedError(
-                f"could not read image: {exc}"
-            ) from exc
+            raise AttachmentTypeNotAllowedError(f"could not read image: {exc}") from exc
 
         if img.format not in _ALLOWED_FORMATS:
             raise AttachmentTypeNotAllowedError(

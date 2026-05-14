@@ -98,9 +98,7 @@ class MessageService:
         if not body_clean:
             raise ValueError("body must be non-empty")
         if len(body_clean) > _BODY_MAX:
-            raise MessageBodyTooLongError(
-                f"body exceeds {_BODY_MAX} characters"
-            )
+            raise MessageBodyTooLongError(f"body exceeds {_BODY_MAX} characters")
 
         sender_nick = self._nickname_repo.find_by_user_id(sender_user_id)
         sender_nickname = sender_nick.nickname if sender_nick is not None else ""
@@ -175,9 +173,7 @@ class MessageService:
 
         body_clean = (body or "").strip()
         if len(body_clean) > _BODY_MAX:
-            raise MessageBodyTooLongError(
-                f"body exceeds {_BODY_MAX} characters"
-            )
+            raise MessageBodyTooLongError(f"body exceeds {_BODY_MAX} characters")
 
         attachment = self._attachments.process_and_store(
             raw_image_bytes, owner_user_id=sender_user_id
@@ -202,9 +198,7 @@ class MessageService:
         peer_id = ConversationService.peer_of(sender_user_id, conv)
         ConversationService.increment_unread_for(peer_id, conv)
         conv.last_message_at = now
-        conv.last_message_preview = (
-            body_clean[:120] if body_clean else "[image]"
-        )
+        conv.last_message_preview = body_clean[:120] if body_clean else "[image]"
         self._conv_repo.save(conv)
 
         message_dict = msg.to_dict()
@@ -229,9 +223,7 @@ class MessageService:
 
         conv = self._conv_repo.find_by_id(conversation_id)
         if conv is None:
-            raise ConversationNotFoundError(
-                f"conversation {conversation_id} not found"
-            )
+            raise ConversationNotFoundError(f"conversation {conversation_id} not found")
 
         sender_nick = self._nickname_repo.find_by_user_id(sender_user_id)
         sender_nickname = sender_nick.nickname if sender_nick is not None else ""
@@ -299,9 +291,7 @@ class MessageService:
     def _require_member(self, conversation_id, user_id):
         conv = self._conv_repo.find_by_id(conversation_id)
         if conv is None:
-            raise ConversationNotFoundError(
-                f"conversation {conversation_id} not found"
-            )
+            raise ConversationNotFoundError(f"conversation {conversation_id} not found")
         if not ConversationService.is_member(user_id, conv):
             raise NotAConversationMemberError(
                 f"user {user_id} is not in this conversation"
