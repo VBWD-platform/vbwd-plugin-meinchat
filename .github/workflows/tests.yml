@@ -25,6 +25,19 @@ jobs:
         with:
           path: vbwd-backend/plugins/meinchat
 
+      - name: Pre-create empty migration dirs for sibling plugins
+        # alembic.ini ships with `version_locations` for every plugin's
+        # migrations dir. In this CI only meinchat is overlaid, so the
+        # other plugin dirs don't exist on disk — and alembic refuses to
+        # start with a missing version_location, which silently kills the
+        # api container's `alembic upgrade heads` and leaves the DB empty.
+        # Empty dirs are enough: alembic finds no revisions there but
+        # also doesn't error.
+        run: |
+          for plugin_dir in taro cms ghrm booking chat shop discount; do
+            mkdir -p "vbwd-backend/plugins/${plugin_dir}/migrations/versions"
+          done
+
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
