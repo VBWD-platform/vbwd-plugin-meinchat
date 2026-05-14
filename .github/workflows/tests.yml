@@ -50,12 +50,28 @@ jobs:
         if: always()
         working-directory: vbwd-backend
         run: |
-          if [ -d "plugins/meinchat/tests/integration" ]; then
-            docker compose --profile test-integration run --rm test-integration \
-              bash -c "pytest plugins/meinchat/tests/integration/ -v --tb=short"
-          else
+          integration_dir="plugins/meinchat/tests/integration"
+          if [ ! -d "$integration_dir" ]; then
             echo "No integration tests yet — skipping"
+            exit 0
           fi
+          # The api container's CMD runs `alembic upgrade heads` after the
+          # entrypoint starts, but `docker compose up -d --build` returns
+          # immediately. Without this guard the integration tests race the
+          # migration and explode on `relation "vbwd_user" does not exist`.
+          for attempt in $(seq 1 60); do
+            if docker compose exec -T postgres psql -U vbwd -d vbwd \
+                -c "SELECT 1 FROM vbwd_user LIMIT 1" > /dev/null 2>&1; then
+              echo "vbwd_user table is ready (attempt $attempt)"
+              break
+            fi
+            sleep 2
+          done
+          # --no-deps prevents test-integration from recreating the api
+          # container (which would force another alembic round-trip and
+          # re-introduce the race we just waited out).
+          docker compose --profile test-integration run --rm --no-deps test-integration \
+            bash -c "pytest plugins/meinchat/tests/integration/ -v --tb=short"
 
       - name: Cleanup
         if: always()
