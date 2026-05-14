@@ -19,21 +19,69 @@ os.environ.setdefault("FLASK_ENV", "testing")
 os.environ.setdefault("TESTING", "true")
 
 
-@pytest.fixture
-def app():
-    """Boot the full Flask app once per test that requests the fixture."""
-    from vbwd.app import create_app
-    from vbwd.config import get_database_url
+def _test_db_url() -> str:
+    """Use a sibling `<dbname>_test` database so the integration tests don't
+    collide with whatever the api container is doing in the main `vbwd` DB."""
+    base = os.getenv("DATABASE_URL", "postgresql://vbwd:vbwd@postgres:5432/vbwd")
+    prefix, _, dbname = base.rpartition("/")
+    dbname = dbname.split("?")[0]
+    return f"{prefix}/{dbname}_test"
 
+
+def _ensure_test_db(url: str) -> None:
+    from sqlalchemy import create_engine, text
+
+    main_url = url.rsplit("/", 1)[0] + "/postgres"
+    dbname = url.rsplit("/", 1)[1].split("?")[0]
+    engine = create_engine(main_url, isolation_level="AUTOCOMMIT")
+    try:
+        with engine.connect() as conn:
+            exists = conn.execute(
+                text("SELECT 1 FROM pg_database WHERE datname = :n"), {"n": dbname}
+            ).scalar()
+            if not exists:
+                conn.execute(text(f'CREATE DATABASE "{dbname}"'))
+    finally:
+        engine.dispose()
+
+
+@pytest.fixture(scope="session")
+def app():
+    """Boot the full Flask app on a `<dbname>_test` database with all
+    meinchat + core tables created via `db.create_all()`. Self-bootstrapping
+    so the test doesn't depend on the api container's CMD having finished
+    `alembic upgrade heads`.
+
+    Session-scoped: the existing integration tests assume rows seeded by
+    one spec are visible to the next (e.g. `test_paged_listing_returns_correct_total`
+    expects users created in `test_prefix_search_…`). A function-scoped
+    fixture would drop_all between tests and break that assumption."""
+    from vbwd.app import create_app
+    from vbwd.extensions import db as _db
+
+    test_url = _test_db_url()
+    _ensure_test_db(test_url)
     application = create_app(
         {
             "TESTING": True,
-            "SQLALCHEMY_DATABASE_URI": get_database_url(),
+            "SQLALCHEMY_DATABASE_URI": test_url,
             "SQLALCHEMY_TRACK_MODIFICATIONS": False,
             "WTF_CSRF_ENABLED": False,
+            "RATELIMIT_ENABLED": False,
+            "RATELIMIT_STORAGE_URL": "memory://",
         }
     )
-    yield application
+    with application.app_context():
+        # Importing the meinchat models package registers user_nickname,
+        # user_contact, conversation, message, token_transfer with SQLAlchemy
+        # so they get created alongside the core tables.
+        import plugins.meinchat.meinchat.models  # noqa: F401
+
+        _db.create_all()
+        yield application
+        _db.session.remove()
+        _db.drop_all()
+        _db.engine.dispose()
 
 
 @pytest.fixture
