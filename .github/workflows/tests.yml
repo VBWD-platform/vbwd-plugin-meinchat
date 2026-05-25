@@ -25,6 +25,21 @@ jobs:
         with:
           path: vbwd-backend/plugins/meinchat
 
+      # meinchat declares dependencies=["subscription"]; its migration branch
+      # anchors on subscription's sub_baseline, so clone subscription (real) +
+      # email (subscription's own dependency).
+      - name: Clone subscription dependency
+        uses: actions/checkout@v4
+        with:
+          repository: VBWD-platform/vbwd-plugin-subscription
+          path: vbwd-backend/plugins/subscription
+
+      - name: Clone email dependency
+        uses: actions/checkout@v4
+        with:
+          repository: VBWD-platform/vbwd-plugin-email
+          path: vbwd-backend/plugins/email
+
       - name: Pre-create empty migration dirs for sibling plugins
         # alembic.ini ships with `version_locations` for every plugin's
         # migrations dir. In this CI only meinchat is overlaid, so the

@@ -38,7 +38,7 @@ class MeinchatPlugin(BasePlugin):
                 "User nickname directory, address book, 1-on-1 messaging "
                 "with images, and peer token transfer."
             ),
-            dependencies=[],
+            dependencies=["subscription"],
         )
 
     def initialize(self, config: Optional[Dict[str, Any]] = None) -> None:

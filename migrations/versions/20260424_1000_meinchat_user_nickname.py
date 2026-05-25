@@ -4,15 +4,20 @@ Sprint 57 slice one — nickname subsystem. Subsequent slices add
 user_contact, conversation + message, and token_transfer tables.
 
 Revision ID: 20260424_1000
-Revises: 20260422_1200
+Revises: 20260523_1000_sub_baseline
 Create Date: 2026-04-24
+
+meinchat declares a dependency on the subscription plugin, so its migration
+branch anchors on subscription's `sub_baseline` (not on the cms `20260422_1200`
+it chained off purely by creation order). The declared dep makes subscription's
+migrations available wherever meinchat's run (runtime + CI).
 """
 from alembic import op
 import sqlalchemy as sa
 
 
 revision = "20260424_1000"
-down_revision = "20260422_1200"
+down_revision = "20260523_1000_sub_baseline"
 branch_labels = None
 depends_on = None
 
