@@ -77,7 +77,55 @@ class MeinchatPlugin(BasePlugin):
         ]
 
     def on_enable(self) -> None:
-        pass
+        # S09 — register the plugin's repositories with the DI container so
+        # handlers / routes / other plugins can resolve them via
+        # `current_app.container.meinchat_<name>_repository()`.
+        from flask import current_app
+
+        from vbwd.plugins.di_helpers import register_repositories
+        from plugins.meinchat.meinchat.repositories.contact_repository import (
+            ContactRepository,
+        )
+        from plugins.meinchat.meinchat.repositories.conversation_repository import (
+            ConversationRepository,
+        )
+        from plugins.meinchat.meinchat.repositories.message_repository import (
+            MessageRepository,
+        )
+        from plugins.meinchat.meinchat.repositories.nickname_repository import (
+            NicknameRepository,
+        )
+        from plugins.meinchat.meinchat.repositories.token_transfer_repository import (  # noqa: E501
+            TokenTransferRepository,
+        )
+
+        container = getattr(current_app, "container", None)
+        if container is not None:
+            register_repositories(
+                container,
+                {
+                    "meinchat_conversation_repository": ConversationRepository,
+                    "meinchat_message_repository": MessageRepository,
+                    "meinchat_contact_repository": ContactRepository,
+                    "meinchat_nickname_repository": NicknameRepository,
+                    "meinchat_token_transfer_repository": TokenTransferRepository,
+                },
+            )
 
     def on_disable(self) -> None:
-        pass
+        from flask import current_app
+
+        from vbwd.plugins.di_helpers import unregister_repositories
+
+        container = getattr(current_app, "container", None)
+        if container is not None:
+            unregister_repositories(
+                container,
+                [
+                    "meinchat_conversation_repository",
+                    "meinchat_message_repository",
+                    "meinchat_contact_repository",
+                    "meinchat_nickname_repository",
+                    "meinchat_token_transfer_repository",
+                ],
+            )
