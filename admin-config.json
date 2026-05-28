@@ -27,6 +27,148 @@
           "max": 52428800
         }
       ]
+    },
+    {
+      "id": "rate-limits-baseline",
+      "label": "Rate limits (baseline)",
+      "fields": [
+        {
+          "key": "rate_new_conversation_per_window",
+          "label": "New conversation — max per window",
+          "component": "input",
+          "inputType": "number",
+          "min": 1,
+          "max": 10000,
+          "description": "Counter only increments when a brand-new conversation row is created. Opening an existing chat is free."
+        },
+        {
+          "key": "rate_new_conversation_window_seconds",
+          "label": "New conversation — window (seconds)",
+          "component": "input",
+          "inputType": "number",
+          "min": 1,
+          "max": 86400
+        },
+        {
+          "key": "rate_nickname_search_per_window",
+          "label": "Nickname search — max per window",
+          "component": "input",
+          "inputType": "number",
+          "min": 1,
+          "max": 10000
+        },
+        {
+          "key": "rate_nickname_search_window_seconds",
+          "label": "Nickname search — window (seconds)",
+          "component": "input",
+          "inputType": "number",
+          "min": 1,
+          "max": 86400
+        },
+        {
+          "key": "rate_message_send_per_window",
+          "label": "Message send — max per window",
+          "component": "input",
+          "inputType": "number",
+          "min": 1,
+          "max": 100000
+        },
+        {
+          "key": "rate_message_send_window_seconds",
+          "label": "Message send — window (seconds)",
+          "component": "input",
+          "inputType": "number",
+          "min": 1,
+          "max": 86400
+        },
+        {
+          "key": "rate_attachment_send_per_window",
+          "label": "Attachment send — max per window",
+          "component": "input",
+          "inputType": "number",
+          "min": 1,
+          "max": 10000
+        },
+        {
+          "key": "rate_attachment_send_window_seconds",
+          "label": "Attachment send — window (seconds)",
+          "component": "input",
+          "inputType": "number",
+          "min": 1,
+          "max": 86400
+        }
+      ]
+    },
+    {
+      "id": "rate-limits-ios",
+      "label": "Rate limits (iOS overrides)",
+      "fields": [
+        {
+          "key": "rate_ios_new_conversation_per_window",
+          "label": "iOS — New conversation max per window",
+          "component": "input",
+          "inputType": "number",
+          "min": 1,
+          "max": 10000,
+          "description": "Applied when the client sends X-Client-Platform: ios."
+        },
+        {
+          "key": "rate_ios_new_conversation_window_seconds",
+          "label": "iOS — New conversation window (seconds)",
+          "component": "input",
+          "inputType": "number",
+          "min": 1,
+          "max": 86400
+        },
+        {
+          "key": "rate_ios_nickname_search_per_window",
+          "label": "iOS — Nickname search max per window",
+          "component": "input",
+          "inputType": "number",
+          "min": 1,
+          "max": 10000
+        },
+        {
+          "key": "rate_ios_nickname_search_window_seconds",
+          "label": "iOS — Nickname search window (seconds)",
+          "component": "input",
+          "inputType": "number",
+          "min": 1,
+          "max": 86400
+        },
+        {
+          "key": "rate_ios_message_send_per_window",
+          "label": "iOS — Message send max per window",
+          "component": "input",
+          "inputType": "number",
+          "min": 1,
+          "max": 100000
+        },
+        {
+          "key": "rate_ios_message_send_window_seconds",
+          "label": "iOS — Message send window (seconds)",
+          "component": "input",
+          "inputType": "number",
+          "min": 1,
+          "max": 86400
+        },
+        {
+          "key": "rate_ios_attachment_send_per_window",
+          "label": "iOS — Attachment send max per window",
+          "component": "input",
+          "inputType": "number",
+          "min": 1,
+          "max": 10000
+        },
+        {
+          "key": "rate_ios_attachment_send_window_seconds",
+          "label": "iOS — Attachment send window (seconds)",
+          "component": "input",
+          "inputType": "number",
+          "min": 1,
+          "max": 86400
+        }
+      ]
     }
   ]
 }

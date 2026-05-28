@@ -85,6 +85,33 @@ class TestStartOrGet:
             service.start_or_get(a, a)
 
 
+class TestFindBetween:
+    def test_returns_existing_pair(self, service, repo):
+        user_a, user_b = uuid4(), uuid4()
+        low, high = order_pair(user_a, user_b)
+        existing = _conversation_row(low, high)
+        repo.find_by_pair.return_value = existing
+
+        assert service.find_between(user_a, user_b) is existing
+        assert service.find_between(user_b, user_a) is existing
+        repo.save.assert_not_called()
+
+    def test_returns_none_for_unknown_pair(self, service, repo):
+        repo.find_by_pair.return_value = None
+        assert service.find_between(uuid4(), uuid4()) is None
+
+    def test_never_writes(self, service, repo):
+        repo.find_by_pair.return_value = None
+        for _ in range(5):
+            service.find_between(uuid4(), uuid4())
+        repo.save.assert_not_called()
+
+    def test_self_pair_raises(self, service):
+        same = uuid4()
+        with pytest.raises(SelfConversationError):
+            service.find_between(same, same)
+
+
 class TestUnreadAccounting:
     def test_peer_id_resolves_to_correct_unread_slot(self, service):
         """`unread_for(user_id, conversation)` returns the slot belonging to

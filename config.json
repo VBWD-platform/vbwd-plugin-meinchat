@@ -13,5 +13,87 @@
     "type": "integer",
     "default": 5242880,
     "description": "Maximum allowed image attachment size in bytes (default: 5 MB)"
+  },
+
+  "rate_new_conversation_per_window": {
+    "type": "integer",
+    "default": 10,
+    "description": "Baseline: max new-conversation creations per rolling window (web + unknown platforms). Counter increments only when a brand-new conversation row is created — opening an existing chat is free."
+  },
+  "rate_new_conversation_window_seconds": {
+    "type": "integer",
+    "default": 3600,
+    "description": "Baseline: rolling window length in seconds for new_conversation."
+  },
+  "rate_nickname_search_per_window": {
+    "type": "integer",
+    "default": 30,
+    "description": "Baseline: max nickname-search calls per rolling window."
+  },
+  "rate_nickname_search_window_seconds": {
+    "type": "integer",
+    "default": 60,
+    "description": "Baseline: rolling window length in seconds for nickname_search."
+  },
+  "rate_message_send_per_window": {
+    "type": "integer",
+    "default": 30,
+    "description": "Baseline: max messages sent per rolling window."
+  },
+  "rate_message_send_window_seconds": {
+    "type": "integer",
+    "default": 60,
+    "description": "Baseline: rolling window length in seconds for message_send."
+  },
+  "rate_attachment_send_per_window": {
+    "type": "integer",
+    "default": 6,
+    "description": "Baseline: max attachment uploads per rolling window."
+  },
+  "rate_attachment_send_window_seconds": {
+    "type": "integer",
+    "default": 3600,
+    "description": "Baseline: rolling window length in seconds for attachment_send."
+  },
+
+  "rate_ios_new_conversation_per_window": {
+    "type": "integer",
+    "default": 60,
+    "description": "iOS override: max new-conversation creations per rolling window when X-Client-Platform: ios."
+  },
+  "rate_ios_new_conversation_window_seconds": {
+    "type": "integer",
+    "default": 3600,
+    "description": "iOS override: rolling window length in seconds for new_conversation."
+  },
+  "rate_ios_nickname_search_per_window": {
+    "type": "integer",
+    "default": 90,
+    "description": "iOS override: max nickname-search calls per rolling window."
+  },
+  "rate_ios_nickname_search_window_seconds": {
+    "type": "integer",
+    "default": 60,
+    "description": "iOS override: rolling window length in seconds for nickname_search."
+  },
+  "rate_ios_message_send_per_window": {
+    "type": "integer",
+    "default": 120,
+    "description": "iOS override: max messages sent per rolling window."
+  },
+  "rate_ios_message_send_window_seconds": {
+    "type": "integer",
+    "default": 60,
+    "description": "iOS override: rolling window length in seconds for message_send."
+  },
+  "rate_ios_attachment_send_per_window": {
+    "type": "integer",
+    "default": 30,
+    "description": "iOS override: max attachment uploads per rolling window."
+  },
+  "rate_ios_attachment_send_window_seconds": {
+    "type": "integer",
+    "default": 3600,
+    "description": "iOS override: rolling window length in seconds for attachment_send."
   }
 }

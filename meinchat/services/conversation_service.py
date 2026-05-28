@@ -6,7 +6,7 @@ Here we normalise the caller's (user_a, user_b) pair into the same (low,
 high) order before any lookup or insert, so A↔B and B↔A always resolve
 to the same row.
 """
-from typing import Tuple
+from typing import Optional, Tuple
 from uuid import UUID
 
 from plugins.meinchat.meinchat.models.conversation import Conversation
@@ -46,6 +46,15 @@ class ConversationService:
         return self._repo.save(conv)
 
     # ── read helpers ────────────────────────────────────────────────────────
+
+    def find_between(
+        self, user_a: UUID, user_b: UUID
+    ) -> Optional[Conversation]:
+        # Lookup-only sibling of start_or_get. Used by the start-conversation
+        # route to short-circuit the "open existing chat" path so it never
+        # touches the new_conversation rate-limit counter.
+        low, high = order_pair(user_a, user_b)
+        return self._repo.find_by_pair(low, high)
 
     def get_by_id(self, conv_id: UUID) -> Conversation:
         return self._repo.find_by_id(conv_id)

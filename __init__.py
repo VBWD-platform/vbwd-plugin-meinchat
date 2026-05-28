@@ -15,13 +15,33 @@ if TYPE_CHECKING:
 DEFAULT_CONFIG: Dict[str, Any] = {
     # Decision Q5: banned slug becomes reusable this many days after ban.
     "nickname_ban_grace_period_days": 30,
-    # Placeholders for subsequent slices:
+    # Pre-S26 flat keys — kept as fallback for instances upgrading from an
+    # older config. RateLimitPolicy reads these only when the new
+    # `rate_message_send_*` / `rate_attachment_send_*` pair is missing.
     "message_rate_per_minute": 30,
     "attachment_rate_per_hour": 6,
     "attachment_max_bytes": 5 * 1024 * 1024,
     "attachment_max_dimension_px": 2048,
     "sse_heartbeat_seconds": 20,
     "sse_stream_token_ttl_minutes": 60,
+    # ── Baseline rate limits (web + unknown platforms) ──────────────────────
+    "rate_new_conversation_per_window": 10,
+    "rate_new_conversation_window_seconds": 3600,
+    "rate_nickname_search_per_window": 30,
+    "rate_nickname_search_window_seconds": 60,
+    "rate_message_send_per_window": 30,
+    "rate_message_send_window_seconds": 60,
+    "rate_attachment_send_per_window": 6,
+    "rate_attachment_send_window_seconds": 3600,
+    # ── iOS overrides (selected when X-Client-Platform: ios) ────────────────
+    "rate_ios_new_conversation_per_window": 60,
+    "rate_ios_new_conversation_window_seconds": 3600,
+    "rate_ios_nickname_search_per_window": 90,
+    "rate_ios_nickname_search_window_seconds": 60,
+    "rate_ios_message_send_per_window": 120,
+    "rate_ios_message_send_window_seconds": 60,
+    "rate_ios_attachment_send_per_window": 30,
+    "rate_ios_attachment_send_window_seconds": 3600,
 }
 
 

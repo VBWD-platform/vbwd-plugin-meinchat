@@ -72,6 +72,7 @@ from plugins.meinchat.meinchat.services.token_transfer_service import (
 )
 from plugins.meinchat.meinchat.services.event_bus import MeinchatEventBus
 from plugins.meinchat.meinchat.services.redis_event_bus import RedisEventBus
+from plugins.meinchat.meinchat.services.rate_limit_policy import RateLimitPolicy
 from plugins.meinchat.meinchat.services.rate_limiter import (
     InMemoryCounterBackend,
     RateLimitExceeded,
@@ -155,8 +156,16 @@ def _rate_limiter() -> RateLimiter:
     return rl
 
 
-def _enforce_rate(category: str, per_window: int, window_seconds: int):
-    """Tiny helper so each route stays one-liner on the rate check."""
+def _enforce_rate(category: str):
+    """Per-request rate guard. Limits are config-driven (no literals at the
+    call site) and platform-aware via the X-Client-Platform header — see
+    plugins/meinchat/meinchat/services/rate_limit_policy.py for the
+    resolution order.
+    """
+    platform = (request.headers.get("X-Client-Platform") or "web").lower()
+    per_window, window_seconds = RateLimitPolicy(_meinchat_config()).limits_for(
+        category, platform
+    )
     try:
         _rate_limiter().check(
             category,
@@ -168,6 +177,7 @@ def _enforce_rate(category: str, per_window: int, window_seconds: int):
         response = jsonify({"error": str(exc)})
         response.status_code = 429
         response.headers["Retry-After"] = str(exc.retry_after_seconds)
+        response.headers["X-Rate-Limit-Category"] = category
         return response
     return None
 
@@ -284,7 +294,7 @@ def put_my_nickname():
 @meinchat_bp.route("/api/v1/nickname/search", methods=["GET"])
 @require_auth
 def search_nicknames():
-    blocked = _enforce_rate("nickname_search", per_window=30, window_seconds=60)
+    blocked = _enforce_rate("nickname_search")
     if blocked is not None:
         return blocked
     prefix = (request.args.get("q") or "").strip().lower()
@@ -410,10 +420,12 @@ def list_conversations():
 @meinchat_bp.route("/api/v1/messaging/conversations", methods=["POST"])
 @require_auth
 def start_conversation():
-    """Body: {peer_nickname}. Returns the existing conversation or a new one."""
-    blocked = _enforce_rate("new_conversation", per_window=10, window_seconds=3600)
-    if blocked is not None:
-        return blocked
+    """Body: {peer_nickname}. Returns the existing conversation or a new one.
+
+    Lookup-first: opening an already-existing chat is free (no rate-limit
+    counter touched). Only the actual creation of a new conversation row
+    counts against the new_conversation quota.
+    """
     data = request.get_json(silent=True) or {}
     peer_nickname = data.get("peer_nickname")
     if not isinstance(peer_nickname, str) or not peer_nickname.strip():
@@ -423,8 +435,24 @@ def start_conversation():
     if target is None or target.banned or target.search_hidden:
         return jsonify({"error": f"'{peer_nickname}' not found"}), 404
 
+    conversation_service = _conversation_service()
     try:
-        conv = _conversation_service().start_or_get(g.user_id, target.user_id)
+        existing = conversation_service.find_between(g.user_id, target.user_id)
+    except SelfConversationError as exc:
+        return jsonify({"error": str(exc)}), 400
+    if existing is not None:
+        response = jsonify(
+            _serialize_conversation_for_user(existing, g.user_id)
+        )
+        response.headers["X-Conversation-Existed"] = "true"
+        return response, 200
+
+    blocked = _enforce_rate("new_conversation")
+    if blocked is not None:
+        return blocked
+
+    try:
+        conv = conversation_service.start_or_get(g.user_id, target.user_id)
         db.session.commit()
         return jsonify(_serialize_conversation_for_user(conv, g.user_id)), 200
     except SelfConversationError as exc:
@@ -455,12 +483,7 @@ def list_messages(conv_id: str):
 )
 @require_auth
 def send_message(conv_id: str):
-    cfg = _meinchat_config()
-    blocked = _enforce_rate(
-        "send",
-        per_window=int(cfg.get("message_rate_per_minute", 30)),
-        window_seconds=60,
-    )
+    blocked = _enforce_rate("message_send")
     if blocked is not None:
         return blocked
     data = request.get_json(silent=True) or {}
@@ -493,12 +516,7 @@ def send_attachment_message(conv_id: str):
 
     Optional 'body' form field carries a short caption (≤ 4000 chars).
     """
-    cfg = _meinchat_config()
-    blocked = _enforce_rate(
-        "attachment",
-        per_window=int(cfg.get("attachment_rate_per_hour", 6)),
-        window_seconds=3600,
-    )
+    blocked = _enforce_rate("attachment_send")
     if blocked is not None:
         return blocked
 
