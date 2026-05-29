@@ -51,13 +51,9 @@ class RateLimitPolicy:
     def __init__(self, config: Dict) -> None:
         self._config = config or {}
 
-    def limits_for(
-        self, category: str, platform: str
-    ) -> Tuple[int, int]:
+    def limits_for(self, category: str, platform: str) -> Tuple[int, int]:
         if category not in CATEGORIES:
-            raise UnknownRateLimitCategory(
-                f"unknown rate-limit category: {category!r}"
-            )
+            raise UnknownRateLimitCategory(f"unknown rate-limit category: {category!r}")
         platform_key = (platform or "web").lower()
 
         override = self._read_pair(f"rate_{platform_key}_{category}")

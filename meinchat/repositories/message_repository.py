@@ -1,5 +1,6 @@
 """Data access for message rows (paginated by sent_at cursor)."""
-from typing import List, Optional
+from datetime import datetime
+from typing import List, Optional, Sequence
 from uuid import UUID
 
 from plugins.meinchat.meinchat.models.message import Message
@@ -38,3 +39,27 @@ class MessageRepository:
     def delete(self, row: Message) -> None:
         self._session.delete(row)
         self._session.flush()
+
+    # ── retention prune (S28.1) ─────────────────────────────────────────────
+
+    def find_older_than(self, threshold: datetime) -> List[Message]:
+        """Return all message rows whose `sent_at` is strictly older than
+        `threshold` (the retention candidate set for the prune)."""
+        return self._session.query(Message).filter(Message.sent_at < threshold).all()
+
+    def delete_by_ids(self, ids: Sequence[UUID]) -> List[UUID]:
+        """Hard-delete the given rows via `DELETE … RETURNING id`. Returns the
+        ids actually removed so attachment cleanup can fan out. No-op (empty
+        list) when `ids` is empty — keeps the prune idempotent."""
+        if not ids:
+            return []
+        deleted = (
+            self._session.query(Message.id).filter(Message.id.in_(list(ids))).all()
+        )
+        deleted_ids = [row_id for (row_id,) in deleted]
+        if deleted_ids:
+            self._session.query(Message).filter(Message.id.in_(deleted_ids)).delete(
+                synchronize_session=False
+            )
+            self._session.flush()
+        return deleted_ids

@@ -84,3 +84,27 @@ class TestHeartbeatEmitter:
         # Second heartbeat should arrive roughly `heartbeat_seconds` after
         # the first — we give it a generous envelope for scheduler jitter.
         assert 0.05 < beats[1] - beats[0] < 0.5
+
+
+class TestStreamLifetimeCap:
+    """Regression: the SSE route must pass a finite `timeout` so a stream
+    cannot run forever and pin a gunicorn worker. A heartbeat-enabled
+    subscription used to loop indefinitely when iter_events() was called with
+    no timeout (the prod worker-starvation freeze)."""
+
+    def test_iter_events_terminates_at_deadline_despite_heartbeats(self, bus):
+        # Heartbeat would otherwise re-loop forever; the timeout must win.
+        sub = bus.subscribe("user:cap", heartbeat_seconds=0.05)
+        start = time.time()
+        events = list(sub.iter_events(timeout=0.2))
+        elapsed = time.time() - start
+        # Returns near the deadline, not never; only heartbeats, no real events.
+        assert elapsed < 1.0
+        assert all(e.get("type") == "heartbeat" for e in events)
+
+    def test_iter_events_with_timeout_and_no_heartbeat_returns_when_idle(self, bus):
+        sub = bus.subscribe("user:cap2")
+        start = time.time()
+        events = list(sub.iter_events(timeout=0.1))
+        assert time.time() - start < 1.0
+        assert events == []

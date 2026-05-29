@@ -47,9 +47,7 @@ class ConversationService:
 
     # ── read helpers ────────────────────────────────────────────────────────
 
-    def find_between(
-        self, user_a: UUID, user_b: UUID
-    ) -> Optional[Conversation]:
+    def find_between(self, user_a: UUID, user_b: UUID) -> Optional[Conversation]:
         # Lookup-only sibling of start_or_get. Used by the start-conversation
         # route to short-circuit the "open existing chat" path so it never
         # touches the new_conversation rate-limit counter.

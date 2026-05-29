@@ -20,8 +20,6 @@ from contextlib import ExitStack, contextmanager
 from unittest.mock import MagicMock, patch
 from uuid import UUID, uuid4
 
-import pytest
-
 
 _NEW_CONVERSATION_LIMIT_WEB = 10
 _NEW_CONVERSATION_LIMIT_IOS = 60
@@ -95,8 +93,12 @@ class _StubConversationService:
 
 
 @contextmanager
-def _route_harness(app, caller_user_id: UUID, peers: _PeerRegistry,
-                   conversation_service: _StubConversationService):
+def _route_harness(
+    app,
+    caller_user_id: UUID,
+    peers: _PeerRegistry,
+    conversation_service: _StubConversationService,
+):
     """Patch the auth + plugin-config + repo seams so the route runs against
     in-memory fakes. The meinchat rate-limiter is left untouched — counters
     are real, keyed on the (caller_user_id, category) we supply."""
@@ -153,9 +155,7 @@ def _route_harness(app, caller_user_id: UUID, peers: _PeerRegistry,
         )
 
         patch_user_repo.return_value.find_by_id.return_value = fake_caller
-        patch_auth_service.return_value.verify_token.return_value = str(
-            caller_user_id
-        )
+        patch_auth_service.return_value.verify_token.return_value = str(caller_user_id)
         # Pin the meinchat in-memory rate-limit backend so we never hit
         # whatever Redis state lives on a dev machine, and so the counter
         # starts clean even if a prior test happened to use the same uuid.
@@ -163,6 +163,7 @@ def _route_harness(app, caller_user_id: UUID, peers: _PeerRegistry,
             InMemoryCounterBackend,
             RateLimiter,
         )
+
         original_rate_limiter = getattr(app, "_meinchat_rate_limiter", None)
         app._meinchat_rate_limiter = RateLimiter(InMemoryCounterBackend())
         try:
@@ -216,9 +217,7 @@ class TestStartConversationRateLimit:
             blocked = _post_start(client, f"peer{_NEW_CONVERSATION_LIMIT_WEB}")
             assert blocked.status_code == 429
             assert blocked.headers["Retry-After"]
-            assert (
-                blocked.headers["X-Rate-Limit-Category"] == "new_conversation"
-            )
+            assert blocked.headers["X-Rate-Limit-Category"] == "new_conversation"
 
     def test_mixed_existing_and_new_only_counts_new(self, app, client):
         caller = uuid4()
@@ -237,9 +236,7 @@ class TestStartConversationRateLimit:
                 for index in range(9):
                     response = _post_start(client, f"peer{index}")
                     assert response.status_code == 200
-                    assert (
-                        response.headers.get("X-Conversation-Existed") == "true"
-                    )
+                    assert response.headers.get("X-Conversation-Existed") == "true"
 
             # 10th distinct peer → slot 10 used
             assert _post_start(client, "peer9").status_code == 200
@@ -247,9 +244,7 @@ class TestStartConversationRateLimit:
             # 11th distinct peer → 429
             blocked = _post_start(client, "peer10")
             assert blocked.status_code == 429
-            assert (
-                blocked.headers["X-Rate-Limit-Category"] == "new_conversation"
-            )
+            assert blocked.headers["X-Rate-Limit-Category"] == "new_conversation"
 
     def test_existing_response_header(self, app, client):
         caller = uuid4()
@@ -278,16 +273,14 @@ class TestStartConversationRateLimit:
         with _route_harness(app, caller, peers, conv_service):
             for index in range(_NEW_CONVERSATION_LIMIT_IOS):
                 response = _post_start(client, f"peer{index}", headers=headers)
-                assert response.status_code == 200, (
-                    f"peer{index} expected 200, got {response.status_code}"
-                )
+                assert (
+                    response.status_code == 200
+                ), f"peer{index} expected 200, got {response.status_code}"
             blocked = _post_start(
                 client, f"peer{_NEW_CONVERSATION_LIMIT_IOS}", headers=headers
             )
             assert blocked.status_code == 429
-            assert (
-                blocked.headers["X-Rate-Limit-Category"] == "new_conversation"
-            )
+            assert blocked.headers["X-Rate-Limit-Category"] == "new_conversation"
 
     def test_platform_header_case_insensitive(self, app, client):
         # iOS as "iOS" must behave the same as "ios".
@@ -320,7 +313,8 @@ class TestStartConversationRateLimit:
 
             for index in range(5, 11):
                 response = _post_start(
-                    client, f"peer{index}",
+                    client,
+                    f"peer{index}",
                     headers={"X-Client-Platform": "ios"},
                 )
                 assert response.status_code == 200
@@ -330,15 +324,13 @@ class TestStartConversationRateLimit:
             for index in range(11, 16):
                 response = _post_start(client, f"peer{index}")
                 assert response.status_code == 429
-                assert (
-                    response.headers["X-Rate-Limit-Category"]
-                    == "new_conversation"
-                )
+                assert response.headers["X-Rate-Limit-Category"] == "new_conversation"
 
             # Same user from iOS to a fresh peer → counter is at 16, still
             # under the iOS ceiling of 60 → 200.
             ios_response = _post_start(
-                client, "peer16",
+                client,
+                "peer16",
                 headers={"X-Client-Platform": "ios"},
             )
             assert ios_response.status_code == 200

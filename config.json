@@ -15,6 +15,59 @@
     "description": "Maximum allowed image attachment size in bytes (default: 5 MB)"
   },
 
+  "messages_retention_days_server": {
+    "type": "integer",
+    "default": 2,
+    "min": 0,
+    "max": 365,
+    "description": "How many days the server keeps message rows before pruning. 0 = server-amnesic (every message deleted on the next cron tick). NOTE: incompatible with `meinchat-plus` enabled — async first-message delivery via prekey bundles requires the server to hold ciphertext until delivery. The plugin loader refuses to enable meinchat-plus while this key is 0."
+  },
+  "messages_retention_days_client_suggested": {
+    "type": "integer",
+    "default": 10,
+    "min": 0,
+    "max": 365,
+    "description": "Suggested client-side retention (days). Well-behaved clients shorten but never extend beyond this value (best-effort UX default — not a security guarantee; a forked client can ignore it)."
+  },
+  "attachments_retention_days_server": {
+    "type": "integer",
+    "default": 2,
+    "min": 0,
+    "max": 365,
+    "description": "Server-side retention for attachment objects, read by the S28.1 attachment prune. Same E2E-exemption semantics as messages."
+  },
+  "ciphertext_max_bytes": {
+    "type": "integer",
+    "default": 16384,
+    "min": 1024,
+    "max": 65536,
+    "description": "Upper bound on message envelope size in bytes (ciphertext + per-recipient fan-out header + padding). Validates server-side in S28.3b's SignalEnvelopeValidator."
+  },
+  "retention_prune_cron": {
+    "type": "string",
+    "default": "0 3 * * *",
+    "description": "5-field crontab (UTC) for the daily server-retention prune (S28.1). Default 03:00 UTC. The job hard-deletes message rows older than `messages_retention_days_server` plus their attachment objects."
+  },
+
+  "sse_max_stream_seconds": {
+    "type": "integer",
+    "default": 600,
+    "min": 30,
+    "max": 3600,
+    "description": "Server-side lifetime cap (seconds) for each SSE stream. When reached the stream closes and the browser's EventSource auto-reconnects — prevents an idle connection from pinning a gunicorn worker/DB connection indefinitely (S-incident fix)."
+  },
+  "event_bus_backend": {
+    "type": "string",
+    "default": "auto",
+    "enum": ["auto", "redis", "memory"],
+    "description": "SSE fan-out backend (S38). 'redis' = require Redis, fail loud if unreachable (recommended for multi-worker prod). 'auto' = prefer Redis, warn and degrade to the single-worker in-process bus if Redis is down (dev-friendly). 'memory' = always in-process (correct only with GUNICORN_WORKERS=1)."
+  },
+  "event_bus_channel_prefix": {
+    "type": "string",
+    "default": "meinchat:",
+    "description": "Redis pub/sub channel namespace prefix for SSE fan-out (S38). The per-worker listener psubscribes '<prefix>*'; keep it unique to meinchat so the pattern cannot catch foreign channels."
+  },
+
   "rate_new_conversation_per_window": {
     "type": "integer",
     "default": 10,

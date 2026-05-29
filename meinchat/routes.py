@@ -19,6 +19,7 @@ from flask import (
 
 from vbwd.extensions import db
 from vbwd.middleware.auth import require_admin, require_auth, require_permission
+from vbwd.plugins.payment_route_helpers import check_plugin_enabled
 
 from vbwd.interfaces.file_storage import LocalFileStorage
 
@@ -70,8 +71,7 @@ from plugins.meinchat.meinchat.services.token_transfer_service import (
     SelfTransferError,
     TokenTransferService,
 )
-from plugins.meinchat.meinchat.services.event_bus import MeinchatEventBus
-from plugins.meinchat.meinchat.services.redis_event_bus import RedisEventBus
+from plugins.meinchat.meinchat.services.event_bus_factory import create_event_bus
 from plugins.meinchat.meinchat.services.rate_limit_policy import RateLimitPolicy
 from plugins.meinchat.meinchat.services.rate_limiter import (
     InMemoryCounterBackend,
@@ -183,22 +183,29 @@ def _enforce_rate(category: str):
 
 
 def _event_bus():
-    """Prefer Redis pub/sub so SSE fan-out crosses gunicorn workers.
+    """Resolve the meinchat event bus once per worker (S38).
 
-    Falls back to the in-process bus only when no Redis client is
-    available — useful in unit-test harnesses. In that mode a single
-    worker must handle both the publisher and the subscriber request.
+    Backend is chosen by the plugin config (`event_bus_backend`:
+    auto|redis|memory) via `create_event_bus`, which logs the choice and — in
+    `redis` mode — fails loud rather than silently degrading to the
+    single-worker in-process bus. Cached on `current_app` for the worker's life.
     """
     cached = getattr(current_app, "_meinchat_event_bus", None)
     if cached is not None:
         return cached
+    cfg = _meinchat_config()
+    redis_handle = None
     try:
         from vbwd.utils.redis_client import redis_client
 
-        redis_client.client.ping()
-        bus = RedisEventBus(redis_client.client)
+        redis_handle = redis_client.client
     except Exception:
-        bus = MeinchatEventBus()
+        redis_handle = None
+    bus = create_event_bus(
+        cfg.get("event_bus_backend", "auto"),
+        cfg.get("event_bus_channel_prefix", "meinchat:"),
+        redis_client=redis_handle,
+    )
     current_app._meinchat_event_bus = bus  # type: ignore[attr-defined]
     return bus
 
@@ -405,6 +412,40 @@ def remove_contact(contact_id: str):
 # ── /api/v1/messaging/* ─────────────────────────────────────────────────────
 
 
+@meinchat_bp.route("/api/v1/messaging/limits", methods=["GET"])
+@require_auth
+def get_limits():
+    """Operator-tunable retention/size knobs, read on client cold start.
+
+    Carries operator knobs ONLY — the capability surface
+    (`enabled_protocols`) is a separate concern living on
+    `/messaging/capabilities` from S28.3a (one endpoint, one concern; DRY).
+    Returns the standard `Plugin not enabled` 404 envelope when meinchat is
+    disabled per-instance.
+    """
+    _config, error_response = check_plugin_enabled("meinchat")
+    if error_response is not None:
+        return error_response
+    config = _meinchat_config()
+    return (
+        jsonify(
+            {
+                "messages_retention_days_server": int(
+                    config["messages_retention_days_server"]
+                ),
+                "messages_retention_days_client_suggested": int(
+                    config["messages_retention_days_client_suggested"]
+                ),
+                "attachments_retention_days_server": int(
+                    config["attachments_retention_days_server"]
+                ),
+                "ciphertext_max_bytes": int(config["ciphertext_max_bytes"]),
+            }
+        ),
+        200,
+    )
+
+
 @meinchat_bp.route("/api/v1/messaging/conversations", methods=["GET"])
 @require_auth
 def list_conversations():
@@ -441,9 +482,7 @@ def start_conversation():
     except SelfConversationError as exc:
         return jsonify({"error": str(exc)}), 400
     if existing is not None:
-        response = jsonify(
-            _serialize_conversation_for_user(existing, g.user_id)
-        )
+        response = jsonify(_serialize_conversation_for_user(existing, g.user_id))
         response.headers["X-Conversation-Existed"] = "true"
         return response, 200
 
@@ -621,6 +660,10 @@ def sse_stream():
 
     cfg = _meinchat_config()
     heartbeat_s = float(cfg.get("sse_heartbeat_seconds", 20))
+    # Cap each stream's server-side lifetime so an idle connection is recycled
+    # instead of pinning worker/DB resources indefinitely. The browser's
+    # EventSource auto-reconnects, so the cap is invisible to the user.
+    max_stream_s = float(cfg.get("sse_max_stream_seconds", 600))
     bus = _event_bus()
     subscription = bus.subscribe(f"user:{user_id}", heartbeat_seconds=heartbeat_s)
 
@@ -629,8 +672,13 @@ def sse_stream():
         # First byte keeps the connection warm immediately so the browser
         # transitions out of the EventSource "connecting" state.
         yield ": meinchat stream connected\n\n"
+        # Release the DB connection used by token verification back to the pool
+        # before the (long, query-free) wait loop. Under `@stream_with_context`
+        # the request — and thus its session — lives for the whole stream, so
+        # without this each open stream would also hold a pool connection.
+        db.session.remove()
         try:
-            for event in subscription.iter_events():
+            for event in subscription.iter_events(timeout=max_stream_s):
                 yield f"data: {json.dumps(event)}\n\n"
         finally:
             subscription.close()

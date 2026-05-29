@@ -169,6 +169,48 @@
           "max": 86400
         }
       ]
+    },
+    {
+      "id": "retention",
+      "label": "Retention",
+      "fields": [
+        {
+          "key": "messages_retention_days_server",
+          "label": "Message server retention (days)",
+          "component": "input",
+          "inputType": "number",
+          "min": 0,
+          "max": 365,
+          "description": "How many days the server keeps message rows before pruning. 0 = server-amnesic."
+        },
+        {
+          "key": "messages_retention_days_client_suggested",
+          "label": "Suggested client retention (days)",
+          "component": "input",
+          "inputType": "number",
+          "min": 0,
+          "max": 365,
+          "description": "Suggested client-side retention. Well-behaved clients shorten but never extend beyond this value."
+        },
+        {
+          "key": "attachments_retention_days_server",
+          "label": "Attachment server retention (days)",
+          "component": "input",
+          "inputType": "number",
+          "min": 0,
+          "max": 365,
+          "description": "Server-side retention for attachment objects, read by the attachment prune."
+        },
+        {
+          "key": "ciphertext_max_bytes",
+          "label": "Max message envelope size (bytes)",
+          "component": "input",
+          "inputType": "number",
+          "min": 1024,
+          "max": 65536,
+          "description": "Upper bound on message envelope size in bytes (ciphertext + fan-out header + padding)."
+        }
+      ]
     }
   ]
 }
