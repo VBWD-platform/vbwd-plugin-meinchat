@@ -1,8 +1,16 @@
 """Business logic for messages: send, read, paginate, hard-delete."""
+import logging
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 from uuid import UUID
 
+from plugins.meinchat.meinchat.extensibility import registry
+from plugins.meinchat.meinchat.extensibility.pipeline import (
+    IBodyCodec,
+    IdentityBodyCodec,
+    IPostSendHook,
+    SendContext,
+)
 from plugins.meinchat.meinchat.models.message import Message
 from plugins.meinchat.meinchat.repositories.conversation_repository import (
     ConversationRepository,
@@ -37,6 +45,8 @@ class MessageBodyTooLongError(ValueError):
 
 
 _BODY_MAX = 4000
+
+logger = logging.getLogger(__name__)
 
 
 def _url_to_storage_path(url: Optional[str]) -> Optional[str]:
@@ -81,10 +91,31 @@ class MessageService:
         body = {"type": event_type, **payload}
         self._event_bus.publish(f"user:{user_id}", body)
 
+    @staticmethod
+    def _body_codec() -> IBodyCodec:
+        """Resolve the registered body codec, falling back to the identity
+        codec when no plugin registered one (meinchat-alone / unit tests)."""
+        try:
+            return registry.resolve_first(IBodyCodec)
+        except LookupError:
+            return IdentityBodyCodec()
+
+    def _run_post_send_hooks(self, row: Message) -> None:
+        for hook in registry.resolve_all(IPostSendHook):
+            try:
+                hook.on_sent(row)
+            except Exception as exc:  # a hook must never fail the send
+                logger.error("post-send hook %s failed: %s", hook, exc)
+
     # ── send ───────────────────────────────────────────────────────────────
 
     def send_text(
-        self, conversation_id: UUID, *, sender_user_id: UUID, body: str
+        self,
+        conversation_id: UUID,
+        *,
+        sender_user_id: UUID,
+        body: str,
+        protocol_hint: str = "plain",
     ) -> Message:
         conv = self._conv_repo.find_by_id(conversation_id)
         if conv is None:
@@ -95,32 +126,49 @@ class MessageService:
             )
 
         body_clean = (body or "").strip()
-        if not body_clean:
-            raise ValueError("body must be non-empty")
-        if len(body_clean) > _BODY_MAX:
-            raise MessageBodyTooLongError(f"body exceeds {_BODY_MAX} characters")
+        # Plaintext validation stays inline (single impl, no second consumer).
+        # Non-plain (envelope) rows validate inside the registered codec.
+        if protocol_hint == "plain":
+            if not body_clean:
+                raise ValueError("body must be non-empty")
+            if len(body_clean) > _BODY_MAX:
+                raise MessageBodyTooLongError(f"body exceeds {_BODY_MAX} characters")
 
         sender_nick = self._nickname_repo.find_by_user_id(sender_user_id)
         sender_nickname = sender_nick.nickname if sender_nick is not None else ""
+
+        peer_id = ConversationService.peer_of(sender_user_id, conv)
+        ctx = SendContext(
+            sender=sender_user_id,
+            recipients=[peer_id],
+            conversation=conv,
+            body_or_envelope=body_clean if protocol_hint == "plain" else body,
+            protocol_hint=protocol_hint,
+        )
+        encoded = self._body_codec().encode(ctx)
 
         now = datetime.now(timezone.utc)
         msg = Message()
         msg.conversation_id = conversation_id
         msg.sender_id = sender_user_id
         msg.sender_nickname = sender_nickname
-        msg.body = body_clean
+        msg.protocol = encoded.protocol
+        msg.body = encoded.body
+        msg.envelope = encoded.envelope
         msg.sent_at = now
         self._message_repo.save(msg)
 
-        peer_id = ConversationService.peer_of(sender_user_id, conv)
         ConversationService.increment_unread_for(peer_id, conv)
         conv.last_message_at = now
-        conv.last_message_preview = body_clean[:120]
+        conv.last_message_preview = (
+            body_clean[:120] if encoded.body is not None else "[encrypted]"
+        )
         self._conv_repo.save(conv)
 
         message_dict = msg.to_dict()
         self._publish(peer_id, "message", {"message": message_dict})
         self._publish(sender_user_id, "message", {"message": message_dict})
+        self._run_post_send_hooks(msg)
         return msg
 
     # ── read ──────────────────────────────────────────────────────────────

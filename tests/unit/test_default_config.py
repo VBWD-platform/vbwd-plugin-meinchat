@@ -152,18 +152,29 @@ class TestRetentionConfig:
         for key, expected in _RETENTION_DEFAULTS.items():
             assert config_schema[key]["default"] == expected
 
-    def test_admin_config_has_retention_tab_with_four_fields(self, admin_config_schema):
+    def test_admin_config_retention_tab_has_numeric_knobs(self, admin_config_schema):
         retention_tab = next(
             tab for tab in admin_config_schema["tabs"] if tab["id"] == "retention"
         )
         fields_by_key = {f["key"]: f for f in retention_tab["fields"]}
-        assert set(fields_by_key.keys()) == set(_RETENTION_KEYS)
-        for key, field in fields_by_key.items():
+        # The four numeric retention knobs must be present as number inputs.
+        assert set(_RETENTION_KEYS).issubset(fields_by_key.keys())
+        for key in _RETENTION_KEYS:
+            field = fields_by_key[key]
             assert field["component"] == "input"
             assert field["inputType"] == "number"
             low, high = _RETENTION_BOUNDS[key]
             assert field["min"] == low
             assert field["max"] == high
+
+    def test_admin_config_retention_tab_has_prune_cron(self, admin_config_schema):
+        retention_tab = next(
+            tab for tab in admin_config_schema["tabs"] if tab["id"] == "retention"
+        )
+        fields_by_key = {f["key"]: f for f in retention_tab["fields"]}
+        assert "retention_prune_cron" in fields_by_key
+        assert fields_by_key["retention_prune_cron"]["component"] == "input"
+        assert fields_by_key["retention_prune_cron"]["inputType"] == "text"
 
 
 class TestAdminConfigJson:

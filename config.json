@@ -58,7 +58,7 @@
   },
   "event_bus_backend": {
     "type": "string",
-    "default": "auto",
+    "default": "redis",
     "enum": ["auto", "redis", "memory"],
     "description": "SSE fan-out backend (S38). 'redis' = require Redis, fail loud if unreachable (recommended for multi-worker prod). 'auto' = prefer Redis, warn and degrade to the single-worker in-process bus if Redis is down (dev-friendly). 'memory' = always in-process (correct only with GUNICORN_WORKERS=1)."
   },

@@ -1,4 +1,13 @@
-"""Message model — text / image / system (token_transfer) variants."""
+"""Message model — text / image / system (token_transfer) variants.
+
+S28.3a adds the e2e columns: `protocol` ('plain' | 'e2e_v1' | …), `envelope`
+(opaque ciphertext for non-plain rows), and
+`delivered_to_all_addressed_devices_at` (drives the E2e-aware retention prune).
+For plain rows `body` is populated and `envelope` is NULL; for e2e rows it is
+the reverse — enforced by the `ck_message_body_or_envelope` constraint.
+"""
+import base64
+
 from vbwd.extensions import db
 from vbwd.models.base import BaseModel
 
@@ -8,7 +17,17 @@ class Message(BaseModel):
 
     __tablename__ = "message"
     __table_args__ = (
-        db.CheckConstraint("length(body) <= 4000", name="ck_message_body_len"),
+        # Plain rows: body present and within the length cap.
+        db.CheckConstraint(
+            "protocol <> 'plain' OR (body IS NOT NULL AND length(body) <= 4000)",
+            name="ck_message_body_len",
+        ),
+        # Exactly one of body / envelope is populated, matching the protocol.
+        db.CheckConstraint(
+            "(protocol = 'plain' AND body IS NOT NULL AND envelope IS NULL)"
+            " OR (protocol <> 'plain' AND body IS NULL AND envelope IS NOT NULL)",
+            name="ck_message_body_or_envelope",
+        ),
         db.Index("ix_message_conversation_sent", "conversation_id", "sent_at"),
     )
 
@@ -23,7 +42,13 @@ class Message(BaseModel):
         nullable=False,
     )
     sender_nickname = db.Column(db.String(32), nullable=False)
-    body = db.Column(db.Text, nullable=False, default="")
+    # Plain text (NULL for e2e rows — see ck_message_body_or_envelope).
+    body = db.Column(db.Text, nullable=True)
+    # Opaque encrypted envelope (NULL for plain rows).
+    envelope = db.Column(db.LargeBinary, nullable=True)
+    protocol = db.Column(
+        db.String(32), nullable=False, server_default="plain", default="plain"
+    )
 
     # Attachment fields land in the next slice; declare now so the
     # migration doesn't need a follow-up ALTER.
@@ -35,20 +60,32 @@ class Message(BaseModel):
     sent_at = db.Column(db.DateTime(timezone=True), nullable=False)
     delivered_at = db.Column(db.DateTime(timezone=True), nullable=True)
     read_at = db.Column(db.DateTime(timezone=True), nullable=True)
+    # Set once every addressed device has fetched an e2e row — lets the
+    # S28.1 prune exempt undelivered ciphertext (async first-message delivery).
+    delivered_to_all_addressed_devices_at = db.Column(
+        db.DateTime(timezone=True), nullable=True
+    )
     system_kind = db.Column(db.String(32), nullable=True)
 
     def to_dict(self) -> dict:
-        return {
+        result = {
             "id": str(self.id),
             "conversation_id": str(self.conversation_id),
             "sender_id": str(self.sender_id),
             "sender_nickname": self.sender_nickname,
             "body": self.body,
+            "protocol": self.protocol,
             "attachment_url": self.attachment_url,
             "attachment_thumb_url": self.attachment_thumb_url,
             "attachment_width_px": self.attachment_width_px,
             "attachment_height_px": self.attachment_height_px,
             "sent_at": self.sent_at.isoformat() if self.sent_at else None,
+            "delivered_at": self.delivered_at.isoformat()
+            if self.delivered_at
+            else None,
             "read_at": self.read_at.isoformat() if self.read_at else None,
             "system_kind": self.system_kind,
         }
+        if self.envelope is not None:
+            result["envelope"] = base64.b64encode(self.envelope).decode("ascii")
+        return result

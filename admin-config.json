@@ -209,6 +209,55 @@
           "min": 1024,
           "max": 65536,
           "description": "Upper bound on message envelope size in bytes (ciphertext + fan-out header + padding)."
+        },
+        {
+          "key": "retention_prune_cron",
+          "label": "Retention prune schedule (cron, UTC)",
+          "component": "input",
+          "inputType": "text",
+          "description": "5-field crontab (UTC) for the daily server-retention prune. Default '0 3 * * *' (03:00 UTC). The job hard-deletes message rows older than the server retention plus their attachments."
+        }
+      ]
+    },
+    {
+      "id": "streaming",
+      "label": "Streaming (SSE)",
+      "fields": [
+        {
+          "key": "event_bus_backend",
+          "label": "SSE fan-out backend",
+          "component": "select",
+          "options": [
+            {
+              "value": "redis",
+              "label": "Redis (require Redis, fail loud — recommended for prod)"
+            },
+            {
+              "value": "auto",
+              "label": "Auto (prefer Redis, degrade to in-process if down)"
+            },
+            {
+              "value": "memory",
+              "label": "Memory (in-process — only correct with GUNICORN_WORKERS=1)"
+            }
+          ],
+          "description": "How real-time SSE events fan out across gunicorn workers. 'redis' fails loud if Redis is unreachable; 'auto' warns and degrades to a single-worker in-process bus; 'memory' is always in-process."
+        },
+        {
+          "key": "event_bus_channel_prefix",
+          "label": "Redis channel prefix",
+          "component": "input",
+          "inputType": "text",
+          "description": "Redis pub/sub channel namespace prefix for SSE fan-out. The per-worker listener psubscribes '<prefix>*'; keep it unique to meinchat so the pattern cannot catch foreign channels."
+        },
+        {
+          "key": "sse_max_stream_seconds",
+          "label": "Max SSE stream lifetime (seconds)",
+          "component": "input",
+          "inputType": "number",
+          "min": 30,
+          "max": 3600,
+          "description": "Server-side lifetime cap for each SSE stream. On reaching it the stream closes and the browser's EventSource auto-reconnects — prevents an idle connection from pinning a worker/DB connection indefinitely."
         }
       ]
     }

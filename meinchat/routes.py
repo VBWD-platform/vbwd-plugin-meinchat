@@ -71,6 +71,14 @@ from plugins.meinchat.meinchat.services.token_transfer_service import (
     SelfTransferError,
     TokenTransferService,
 )
+from plugins.meinchat.meinchat.extensibility import registry
+from plugins.meinchat.meinchat.extensibility.identity import (
+    IDeviceDirectory,
+    NullDeviceDirectory,
+)
+from plugins.meinchat.meinchat.extensibility.lifecycle import (
+    IConversationCapabilities,
+)
 from plugins.meinchat.meinchat.services.event_bus_factory import create_event_bus
 from plugins.meinchat.meinchat.services.rate_limit_policy import RateLimitPolicy
 from plugins.meinchat.meinchat.services.rate_limiter import (
@@ -208,6 +216,81 @@ def _event_bus():
     )
     current_app._meinchat_event_bus = bus  # type: ignore[attr-defined]
     return bus
+
+
+def _server_capabilities() -> set:
+    """Union of every registered IConversationCapabilities impl, with the
+    {"plain"} fallback if the registry is empty (test isolation safety)."""
+    caps: set = set()
+    for impl in registry.resolve_all(IConversationCapabilities):
+        caps |= impl.for_conversation(None)
+    return caps or {"plain"}
+
+
+def _device_directory():
+    """Registered device directory, falling back to the null directory."""
+    try:
+        return registry.resolve_first(IDeviceDirectory)
+    except LookupError:
+        return NullDeviceDirectory()
+
+
+# Most-secure-first; negotiation picks the first mutually supported entry.
+_PROTOCOL_PREFERENCE = ["e2e_v1", "plain"]
+
+
+class _NegotiationError(Exception):
+    """Carries the S28.3a §5 negotiation-failure contract (status/code/hint)."""
+
+    def __init__(self, status: int, code: str, hint: str) -> None:
+        super().__init__(hint)
+        self.status = status
+        self.code = code
+        self.hint = hint
+
+
+def _negotiate_protocol(accepted_protocols, peer_user_id):
+    """Return (chosen_protocol, capabilities) or raise _NegotiationError.
+
+    `accepted_protocols` omitted → back-compat plain. Otherwise it must be a
+    subset of the instance's enabled protocols and intersect the peer's
+    usable set (e2e_v1 needs the peer to have a device key).
+    """
+    server = _server_capabilities()
+    if accepted_protocols is None:
+        return "plain", ["plain"]
+    if not isinstance(accepted_protocols, list) or not accepted_protocols:
+        raise _NegotiationError(
+            400, "protocol_not_enabled", "accepted_protocols must be a list."
+        )
+    not_enabled = [p for p in accepted_protocols if p not in server]
+    if not_enabled:
+        raise _NegotiationError(
+            400,
+            "protocol_not_enabled",
+            f"Protocol '{not_enabled[0]}' is not enabled on this instance.",
+        )
+    peer_caps = set(server)
+    peer_has_devices = _device_directory().has_any(peer_user_id)
+    if "e2e_v1" in peer_caps and not peer_has_devices:
+        peer_caps.discard("e2e_v1")
+    common = [
+        p for p in _PROTOCOL_PREFERENCE if p in accepted_protocols and p in peer_caps
+    ]
+    if not common:
+        if "e2e_v1" in accepted_protocols and not peer_has_devices:
+            raise _NegotiationError(
+                409,
+                "peer_has_no_device_keys",
+                "Ask the peer to enable secure chat on a device.",
+            )
+        raise _NegotiationError(
+            409,
+            "protocol_negotiation_empty",
+            "No protocol accepted by both parties.",
+        )
+    chosen = common[0]
+    return chosen, [chosen]
 
 
 def _stream_token_service() -> StreamTokenService:
@@ -446,6 +529,28 @@ def get_limits():
     )
 
 
+@meinchat_bp.route("/api/v1/messaging/capabilities", methods=["GET"])
+@require_auth
+def get_capabilities():
+    """Protocol capability discovery (S28.3a §5).
+
+    `{"server": [...]}` — union of all registered capability impls.
+    With `?me=true`, also `{"me": [...]}` — the caller's usable subset
+    (e2e_v1 requires the caller to have at least one registered device key).
+    """
+    _config, error_response = check_plugin_enabled("meinchat")
+    if error_response is not None:
+        return error_response
+    server = sorted(_server_capabilities())
+    result = {"server": server}
+    if request.args.get("me") == "true":
+        usable = set(server)
+        if "e2e_v1" in usable and not _device_directory().has_any(g.user_id):
+            usable.discard("e2e_v1")
+        result["me"] = sorted(usable)
+    return jsonify(result), 200
+
+
 @meinchat_bp.route("/api/v1/messaging/conversations", methods=["GET"])
 @require_auth
 def list_conversations():
@@ -482,9 +587,22 @@ def start_conversation():
     except SelfConversationError as exc:
         return jsonify({"error": str(exc)}), 400
     if existing is not None:
+        # Protocol is pinned at creation (immutable) — return as-is.
         response = jsonify(_serialize_conversation_for_user(existing, g.user_id))
         response.headers["X-Conversation-Existed"] = "true"
         return response, 200
+
+    # Negotiate the protocol BEFORE spending the new-conversation quota so a
+    # failed negotiation doesn't burn the caller's rate-limit budget.
+    try:
+        chosen_protocol, chosen_caps = _negotiate_protocol(
+            data.get("accepted_protocols"), target.user_id
+        )
+    except _NegotiationError as exc:
+        return (
+            jsonify({"error": exc.hint, "code": exc.code, "hint": exc.hint}),
+            exc.status,
+        )
 
     blocked = _enforce_rate("new_conversation")
     if blocked is not None:
@@ -492,6 +610,8 @@ def start_conversation():
 
     try:
         conv = conversation_service.start_or_get(g.user_id, target.user_id)
+        conv.protocol = chosen_protocol
+        conv.capabilities = chosen_caps
         db.session.commit()
         return jsonify(_serialize_conversation_for_user(conv, g.user_id)), 200
     except SelfConversationError as exc:

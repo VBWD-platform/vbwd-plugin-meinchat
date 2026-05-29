@@ -149,12 +149,41 @@ class MeinchatPlugin(BasePlugin):
                 },
             )
 
+        # S28.3a — register the extension-seam defaults so meinchat-alone
+        # behaviour is preserved and downstream plugins (meinchat-plus) can
+        # override/extend via the registry. Defaults must be present so the
+        # capability union still includes {"plain"} when meinchat-plus adds
+        # {"e2e_v1"}.
+        self._register_extension_defaults()
+
         # S28.1 — daily server-retention prune. Tests pass TESTING=True; the
         # scheduler must NOT spawn there or it leaks threads between tests and
         # exhausts PG connection slots (booking + subscription scheduler
         # post-mortem; feedback_ci_precommit_lessons).
         if not current_app.config.get("TESTING"):
             self._register_retention_job(current_app)
+
+    def _register_extension_defaults(self) -> None:
+        from plugins.meinchat.meinchat.extensibility import registry
+        from plugins.meinchat.meinchat.extensibility.identity import (
+            IDeviceDirectory,
+            NullDeviceDirectory,
+        )
+        from plugins.meinchat.meinchat.extensibility.lifecycle import (
+            BlockListPolicy,
+            IConversationCapabilities,
+            IConversationPolicy,
+            PlainCapability,
+        )
+        from plugins.meinchat.meinchat.extensibility.pipeline import (
+            IBodyCodec,
+            IdentityBodyCodec,
+        )
+
+        registry.register(IBodyCodec, IdentityBodyCodec())
+        registry.register(IConversationPolicy, BlockListPolicy())
+        registry.register(IConversationCapabilities, PlainCapability())
+        registry.register(IDeviceDirectory, NullDeviceDirectory())
 
     def _register_retention_job(self, app) -> None:
         from plugins.meinchat.meinchat.scheduler import start_retention_scheduler
