@@ -49,13 +49,8 @@ class Message(BaseModel):
     protocol = db.Column(
         db.String(32), nullable=False, server_default="plain", default="plain"
     )
-
-    # Attachment fields land in the next slice; declare now so the
-    # migration doesn't need a follow-up ALTER.
-    attachment_url = db.Column(db.String(512), nullable=True)
-    attachment_thumb_url = db.Column(db.String(512), nullable=True)
-    attachment_width_px = db.Column(db.Integer, nullable=True)
-    attachment_height_px = db.Column(db.Integer, nullable=True)
+    # S28.4 — attachments moved to the `meinchat_attachment` child table
+    # (`self.attachments`); the legacy per-row attachment_* columns are gone.
 
     sent_at = db.Column(db.DateTime(timezone=True), nullable=False)
     delivered_at = db.Column(db.DateTime(timezone=True), nullable=True)
@@ -67,6 +62,15 @@ class Message(BaseModel):
     )
     system_kind = db.Column(db.String(32), nullable=True)
 
+    # S28.4 — child attachment blobs (fullres/thumb). String class ref avoids
+    # an import cycle; selectin keeps to_dict's iteration a single extra query.
+    attachments = db.relationship(
+        "MeinchatAttachment",
+        lazy="selectin",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+    )
+
     def to_dict(self) -> dict:
         result = {
             "id": str(self.id),
@@ -75,16 +79,14 @@ class Message(BaseModel):
             "sender_nickname": self.sender_nickname,
             "body": self.body,
             "protocol": self.protocol,
-            "attachment_url": self.attachment_url,
-            "attachment_thumb_url": self.attachment_thumb_url,
-            "attachment_width_px": self.attachment_width_px,
-            "attachment_height_px": self.attachment_height_px,
             "sent_at": self.sent_at.isoformat() if self.sent_at else None,
             "delivered_at": self.delivered_at.isoformat()
             if self.delivered_at
             else None,
             "read_at": self.read_at.isoformat() if self.read_at else None,
             "system_kind": self.system_kind,
+            # S28.4 — attachment blobs (fullres/thumb), empty for none.
+            "attachments": [a.to_dict() for a in self.attachments],
         }
         if self.envelope is not None:
             result["envelope"] = base64.b64encode(self.envelope).decode("ascii")

@@ -77,6 +77,16 @@ def app():
         # so they get created alongside the core tables.
         import plugins.meinchat.meinchat.models  # noqa: F401
 
+        # meinchat-plus is enabled per-instance; when it is, its `on_enable`
+        # registers a device directory backed by these tables, which the
+        # capabilities/negotiation paths query. Create them too so those tests
+        # don't hit a missing-table error. Guarded so meinchat tests still run
+        # if the sibling plugin is absent (independent-repo posture).
+        try:
+            import plugins.meinchat_plus.meinchat_plus.models  # noqa: F401
+        except ImportError:
+            pass
+
         _db.create_all()
         yield application
         _db.session.remove()

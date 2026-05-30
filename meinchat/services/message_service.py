@@ -5,6 +5,10 @@ from typing import Any, Dict, List, Optional
 from uuid import UUID
 
 from plugins.meinchat.meinchat.extensibility import registry
+from plugins.meinchat.meinchat.extensibility.identity import (
+    IDeviceDirectory,
+    NullDeviceDirectory,
+)
 from plugins.meinchat.meinchat.extensibility.pipeline import (
     IBodyCodec,
     IdentityBodyCodec,
@@ -44,6 +48,14 @@ class MessageBodyTooLongError(ValueError):
     pass
 
 
+class AttachmentNotFoundError(Exception):
+    """Attachment row missing, or its message is not visible to the caller."""
+
+
+class PlainAttachmentError(ValueError):
+    """Client tried to attach an e2e blob to a plain message (or vice-versa)."""
+
+
 _BODY_MAX = 4000
 
 logger = logging.getLogger(__name__)
@@ -78,12 +90,14 @@ class MessageService:
         nickname_repo: NicknameRepository,
         attachment_service: Optional[AttachmentService] = None,
         event_bus: Optional[Any] = None,
+        attachment_repo: Optional[Any] = None,
     ) -> None:
         self._conv_repo = conv_repo
         self._message_repo = message_repo
         self._nickname_repo = nickname_repo
         self._attachments = attachment_service
         self._event_bus = event_bus
+        self._attachment_repo = attachment_repo
 
     def _publish(self, user_id, event_type: str, payload: Dict[str, Any]) -> None:
         if self._event_bus is None:
@@ -99,6 +113,29 @@ class MessageService:
             return registry.resolve_first(IBodyCodec)
         except LookupError:
             return IdentityBodyCodec()
+
+    @staticmethod
+    def _device_directory() -> IDeviceDirectory:
+        """Resolve the registered device directory, falling back to the null
+        directory (meinchat-alone has no device keys)."""
+        try:
+            return registry.resolve_first(IDeviceDirectory)
+        except LookupError:
+            return NullDeviceDirectory()
+
+    def _expected_device_ids(self, peer_id: UUID, sender_id: UUID) -> tuple:
+        """Addressed device set for an e2e send: the peer's active devices
+        plus the sender's own (own-device decrypt). Each id is the 16-byte
+        UUID form the client packs into the envelope's per-recipient slots,
+        so the codec can reject envelopes addressed to unknown devices.
+        Empty for meinchat-alone (NullDeviceDirectory) — plain sends ignore
+        it (backward-compatible)."""
+        directory = self._device_directory()
+        devices = (
+            *directory.lookup_active(peer_id),
+            *directory.lookup_active(sender_id),
+        )
+        return tuple(device.id.bytes for device in devices)
 
     def _run_post_send_hooks(self, row: Message) -> None:
         for hook in registry.resolve_all(IPostSendHook):
@@ -144,6 +181,11 @@ class MessageService:
             conversation=conv,
             body_or_envelope=body_clean if protocol_hint == "plain" else body,
             protocol_hint=protocol_hint,
+            expected_device_ids=(
+                ()
+                if protocol_hint == "plain"
+                else self._expected_device_ids(peer_id, sender_user_id)
+            ),
         )
         encoded = self._body_codec().encode(ctx)
 
@@ -223,6 +265,9 @@ class MessageService:
         if len(body_clean) > _BODY_MAX:
             raise MessageBodyTooLongError(f"body exceeds {_BODY_MAX} characters")
 
+        if self._attachment_repo is None:
+            raise RuntimeError("AttachmentRepository not injected")
+
         attachment = self._attachments.process_and_store(
             raw_image_bytes, owner_user_id=sender_user_id
         )
@@ -236,12 +281,31 @@ class MessageService:
         msg.sender_id = sender_user_id
         msg.sender_nickname = sender_nickname
         msg.body = body_clean
-        msg.attachment_url = attachment["attachment_url"]
-        msg.attachment_thumb_url = attachment["attachment_thumb_url"]
-        msg.attachment_width_px = attachment["attachment_width_px"]
-        msg.attachment_height_px = attachment["attachment_height_px"]
         msg.sent_at = now
         self._message_repo.save(msg)
+
+        # S28.4 — plain attachments live in the child table too: one `fullres`
+        # row (carrying the resized dimensions) + one `thumb` row.
+        self._attachment_repo.add(
+            message_id=msg.id,
+            kind="fullres",
+            storage_url=attachment["attachment_url"],
+            protocol="plain",
+            envelope_header=None,
+            mime="image/webp",
+            bytes_count=0,
+            width_px=attachment["attachment_width_px"],
+            height_px=attachment["attachment_height_px"],
+        )
+        self._attachment_repo.add(
+            message_id=msg.id,
+            kind="thumb",
+            storage_url=attachment["attachment_thumb_url"],
+            protocol="plain",
+            envelope_header=None,
+            mime="image/webp",
+            bytes_count=0,
+        )
 
         peer_id = ConversationService.peer_of(sender_user_id, conv)
         ConversationService.increment_unread_for(peer_id, conv)
@@ -253,6 +317,67 @@ class MessageService:
         self._publish(peer_id, "message", {"message": message_dict})
         self._publish(sender_user_id, "message", {"message": message_dict})
         return msg
+
+    # ── e2e attachments (S28.4) ─────────────────────────────────────────────
+
+    def add_e2e_attachment(
+        self,
+        message_id: UUID,
+        *,
+        caller_user_id: UUID,
+        kind: str,
+        ciphertext: bytes,
+        envelope_header: Dict[str, Any],
+        mime: str,
+    ):
+        """Attach a client-encrypted blob to an existing e2e message.
+
+        The caller must be the message's sender. The server stores the opaque
+        ciphertext (never decodes/resizes) and records a `meinchat_attachment`
+        child row carrying the per-recipient key envelope. Returns the row.
+        """
+        if self._attachments is None or self._attachment_repo is None:
+            raise RuntimeError("attachment service/repo not injected")
+        msg = self._message_repo.find_by_id(message_id)
+        if msg is None or str(msg.sender_id) != str(caller_user_id):
+            # Same opaque error whether missing or not-owned (no probing).
+            raise MessageNotFoundError(f"message {message_id} not found")
+        if msg.protocol == "plain":
+            raise PlainAttachmentError(
+                "cannot attach an encrypted blob to a plain message"
+            )
+        coords = self._attachments.store_encrypted(
+            ciphertext,
+            owner_user_id=caller_user_id,
+            kind=kind,
+            mime=mime,
+            protocol=msg.protocol,
+        )
+        return self._attachment_repo.add(
+            message_id=msg.id,
+            kind=coords["kind"],
+            storage_url=coords["storage_url"],
+            protocol=coords["protocol"],
+            envelope_header=envelope_header,
+            mime=coords["mime"],
+            bytes_count=coords["bytes_count"],
+        )
+
+    def get_attachment_blob(self, attachment_id: UUID, *, caller_user_id: UUID):
+        """Return `(bytes, mime)` for an attachment the caller may read (they
+        must be a participant of the attachment's conversation). Bytes are
+        opaque ciphertext for e2e rows — the client decrypts."""
+        if self._attachments is None or self._attachment_repo is None:
+            raise RuntimeError("attachment service/repo not injected")
+        row = self._attachment_repo.find_by_id(attachment_id)
+        if row is None:
+            raise AttachmentNotFoundError(f"attachment {attachment_id} not found")
+        msg = self._message_repo.find_by_id(row.message_id)
+        conv = self._conv_repo.find_by_id(msg.conversation_id) if msg else None
+        if conv is None or not ConversationService.is_member(caller_user_id, conv):
+            raise AttachmentNotFoundError(f"attachment {attachment_id} not found")
+        path = _url_to_storage_path(row.storage_url)
+        return self._attachments.read_blob(path), row.mime
 
     # ── system messages (token_transfer) ───────────────────────────────────
 
@@ -311,13 +436,17 @@ class MessageService:
         recipient_id = ConversationService.peer_of(caller_user_id, conv)
 
         # Purge attachment bytes (Q3) before dropping the DB row so storage
-        # stays in sync even if the commit fails afterwards. Attachment-less
-        # messages skip this with no storage calls.
-        if self._attachments is not None and msg.attachment_url:
-            self._attachments.delete_attachment(
-                original_path=_url_to_storage_path(msg.attachment_url),
-                thumb_path=_url_to_storage_path(msg.attachment_thumb_url),
-            )
+        # stays in sync even if the commit fails afterwards. Each child
+        # attachment blob (plain or e2e) is deleted from storage; the rows
+        # themselves cascade with the message. Attachment-less messages skip
+        # this with no storage calls.
+        if self._attachments is not None:
+            for att in getattr(msg, "attachments", []) or []:
+                path = _url_to_storage_path(att.storage_url)
+                if path is not None:
+                    self._attachments.delete_attachment(
+                        original_path=path, thumb_path=None
+                    )
 
         self._message_repo.delete(msg)
 

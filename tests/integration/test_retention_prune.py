@@ -74,8 +74,24 @@ def _seed_message(repo, *, conv, sender_id, sent_at, attachment_url=None):
     msg.sender_nickname = "tester"
     msg.body = "hello"
     msg.sent_at = sent_at
-    msg.attachment_url = attachment_url
-    return repo.save(msg)
+    saved = repo.save(msg)
+    if attachment_url is not None:
+        # S28.4 — attachments are child rows now (one plain fullres row).
+        from vbwd.extensions import db
+        from plugins.meinchat.meinchat.repositories.attachment_repository import (
+            AttachmentRepository,
+        )
+
+        AttachmentRepository(db.session).add(
+            message_id=saved.id,
+            kind="fullres",
+            storage_url=attachment_url,
+            protocol="plain",
+            envelope_header=None,
+            mime="image/webp",
+            bytes_count=0,
+        )
+    return saved
 
 
 def _service(db, *, days, storage):

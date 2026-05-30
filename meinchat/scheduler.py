@@ -26,9 +26,6 @@ def run_retention_prune(app):
         from plugins.meinchat.meinchat.repositories.message_repository import (
             MessageRepository,
         )
-        from plugins.meinchat.meinchat.services.retention_policy import (
-            ConfigRetentionPolicy,
-        )
         from plugins.meinchat.meinchat.services.retention_service import (
             RetentionService,
         )
@@ -43,7 +40,7 @@ def run_retention_prune(app):
         service = RetentionService(
             message_repo=MessageRepository(db.session),
             attachment_storage=_resolve_storage(app),
-            retention_policy=ConfigRetentionPolicy(config_provider=_config_provider),
+            retention_policy=_resolve_retention_policy(_config_provider),
         )
         # Attachments first (best-effort), then the rows (source of truth).
         attachment_result = service.prune_attachments()
@@ -57,6 +54,24 @@ def run_retention_prune(app):
             message_result.skipped_undelivered_count,
             attachment_result.errors,
         )
+
+
+def _resolve_retention_policy(config_provider):
+    """Use the registered `IRetentionPolicy` (meinchat-plus's
+    `E2eAwareRetentionPolicy` when the plugin is enabled — it exempts
+    undelivered e2e rows), falling back to the meinchat-alone
+    `ConfigRetentionPolicy`. Imports are local so the scheduler module never
+    pulls the extensibility registry at import time."""
+    from plugins.meinchat.meinchat.extensibility import registry
+    from plugins.meinchat.meinchat.services.retention_policy import (
+        ConfigRetentionPolicy,
+        IRetentionPolicy,
+    )
+
+    try:
+        return registry.resolve_first(IRetentionPolicy)
+    except LookupError:
+        return ConfigRetentionPolicy(config_provider=config_provider)
 
 
 def _resolve_storage(app):

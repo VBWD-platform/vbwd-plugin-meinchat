@@ -20,8 +20,14 @@ class AttachmentTypeNotAllowedError(ValueError):
     pass
 
 
+class InvalidEnvelopeError(ValueError):
+    """A non-plain attachment was uploaded without an envelope header."""
+
+
 _ALLOWED_FORMATS = {"PNG", "JPEG", "WEBP"}
 _THUMB_MAX_DIM = 256
+ATTACHMENT_KIND_FULLRES = "fullres"
+ATTACHMENT_KIND_THUMB = "thumb"
 
 
 class AttachmentService:
@@ -81,6 +87,49 @@ class AttachmentService:
                 "thumb": thumb_path,
             },
         }
+
+    def store_encrypted(
+        self,
+        ciphertext: bytes,
+        *,
+        owner_user_id: Any,
+        kind: str,
+        mime: str,
+        protocol: str = "e2e_v1",
+    ) -> Dict[str, Any]:
+        """Store a client-encrypted attachment blob (S28.4).
+
+        The server is a forwarder: the bytes are ALREADY ciphertext, so it
+        never decodes, resizes, or strips EXIF — it validates size + shape
+        and writes the opaque blob to `IFileStorage`. The per-recipient key
+        envelope is carried on the `meinchat_attachment` row by the caller;
+        this method only handles the blob + returns its storage coordinates.
+        """
+        if protocol == "plain":
+            raise InvalidEnvelopeError(
+                "store_encrypted is for non-plain protocols; use process_and_store"
+            )
+        if kind not in (ATTACHMENT_KIND_FULLRES, ATTACHMENT_KIND_THUMB):
+            raise AttachmentTypeNotAllowedError(f"unknown attachment kind '{kind}'")
+        if len(ciphertext) > self._max_bytes:
+            raise AttachmentTooLargeError(f"attachment exceeds {self._max_bytes} bytes")
+        token = uuid.uuid4().hex
+        suffix = "thumb." if kind == ATTACHMENT_KIND_THUMB else ""
+        path = f"{self._prefix}/{owner_user_id}/{token}.{suffix}enc"
+        self._storage.save(ciphertext, path)
+        return {
+            "storage_url": self._storage.get_url(path),
+            "storage_path": path,
+            "mime": mime,
+            "bytes_count": len(ciphertext),
+            "protocol": protocol,
+            "kind": kind,
+        }
+
+    def read_blob(self, storage_path: str) -> bytes:
+        """Return the raw stored bytes — opaque ciphertext for non-plain
+        attachments (the client decrypts). Thin pass-through over storage."""
+        return self._storage.read(storage_path)
 
     def delete_attachment(
         self,

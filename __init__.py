@@ -31,8 +31,8 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     # `rate_message_send_*` / `rate_attachment_send_*` pair is missing.
     "message_rate_per_minute": 30,
     "attachment_rate_per_hour": 6,
-    "attachment_max_bytes": 5 * 1024 * 1024,
-    "attachment_max_dimension_px": 2048,
+    "attachment_max_bytes": 25 * 1024 * 1024,
+    "attachment_max_dimension_px": 4096,
     "sse_heartbeat_seconds": 20,
     "sse_stream_token_ttl_minutes": 60,
     # S-incident: cap each SSE stream's server-side lifetime so an idle stream

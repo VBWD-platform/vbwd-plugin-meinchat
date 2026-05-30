@@ -29,14 +29,15 @@ UTC = timezone.utc
 _NOW = datetime(2026, 5, 29, 12, 0, 0, tzinfo=UTC)
 
 
-def _message(*, sent_at, attachment_url=None, attachment_thumb_url=None):
-    """A lightweight stand-in for a Message row (the service only touches
-    `id`, `sent_at`, and the two attachment URL fields)."""
+def _message(*, sent_at, attachment_urls=None):
+    """A lightweight stand-in for a Message row (the service touches `id`,
+    `sent_at`, and the `attachments` child rows' `storage_url`)."""
     return SimpleNamespace(
         id=uuid4(),
         sent_at=sent_at,
-        attachment_url=attachment_url,
-        attachment_thumb_url=attachment_thumb_url,
+        attachments=[
+            SimpleNamespace(storage_url=url) for url in (attachment_urls or [])
+        ],
     )
 
 
@@ -150,8 +151,10 @@ def test_returns_deleted_ids():
 def test_attachment_storage_failure_is_logged_not_raised():
     older = _message(
         sent_at=_NOW - timedelta(days=5),
-        attachment_url="/uploads/meinchat/attachments/u/x.webp",
-        attachment_thumb_url="/uploads/meinchat/attachments/u/x.thumb.webp",
+        attachment_urls=[
+            "/uploads/meinchat/attachments/u/x.webp",
+            "/uploads/meinchat/attachments/u/x.thumb.webp",
+        ],
     )
     repo = _FakeMessageRepo([older])
     storage = MagicMock(spec=InMemoryFileStorage)
@@ -191,14 +194,18 @@ def test_clock_is_injected():
 
 
 # ── attachment cleanup happy path (supports §3.2 spec 3 at unit level) ───────
-def test_prune_attachments_removes_storage_objects():
+def test_prune_attachments_removes_child_table_blobs():
+    # S28.4 — all attachments (plain + e2e, fullres + thumb) live in the
+    # meinchat_attachment child table; the prune deletes their storage blobs.
     storage = InMemoryFileStorage(base_url="/uploads")
     storage.save(b"orig", "meinchat/attachments/u/x.webp")
     storage.save(b"thumb", "meinchat/attachments/u/x.thumb.webp")
     older = _message(
         sent_at=_NOW - timedelta(days=5),
-        attachment_url="/uploads/meinchat/attachments/u/x.webp",
-        attachment_thumb_url="/uploads/meinchat/attachments/u/x.thumb.webp",
+        attachment_urls=[
+            "/uploads/meinchat/attachments/u/x.webp",
+            "/uploads/meinchat/attachments/u/x.thumb.webp",
+        ],
     )
     repo = _FakeMessageRepo([older])
 

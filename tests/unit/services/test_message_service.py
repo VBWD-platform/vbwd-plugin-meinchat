@@ -201,15 +201,24 @@ class TestAttachmentPurgeOnDelete:
     ):
         alice, bob = uuid4(), uuid4()
         conv = _conversation(alice, bob)
-        from plugins.meinchat.meinchat.models.message import Message
+        from types import SimpleNamespace
 
-        msg = Message()
-        msg.id = uuid4()
-        msg.conversation_id = conv.id
-        msg.sender_id = alice
-        msg.body = ""
-        msg.attachment_url = "/uploads/meinchat/attachments/alice/abc.webp"
-        msg.attachment_thumb_url = "/uploads/meinchat/attachments/alice/abc.thumb.webp"
+        # Plain stand-in (not an ORM Message) so we can attach lightweight
+        # child stubs without engaging the SQLAlchemy relationship machinery.
+        msg = SimpleNamespace(
+            id=uuid4(),
+            conversation_id=conv.id,
+            sender_id=alice,
+            body="",
+            attachments=[
+                SimpleNamespace(
+                    storage_url="/uploads/meinchat/attachments/alice/abc.webp"
+                ),
+                SimpleNamespace(
+                    storage_url="/uploads/meinchat/attachments/alice/abc.thumb.webp"
+                ),
+            ],
+        )
         message_repo.find_by_id.return_value = msg
         conv_repo.find_by_id.return_value = conv
 
@@ -218,9 +227,12 @@ class TestAttachmentPurgeOnDelete:
 
         service.delete_message(msg.id, caller_user_id=alice)
 
-        attachments.delete_attachment.assert_called_once_with(
-            original_path="meinchat/attachments/alice/abc.webp",
-            thumb_path="meinchat/attachments/alice/abc.thumb.webp",
+        assert attachments.delete_attachment.call_count == 2
+        attachments.delete_attachment.assert_any_call(
+            original_path="meinchat/attachments/alice/abc.webp", thumb_path=None
+        )
+        attachments.delete_attachment.assert_any_call(
+            original_path="meinchat/attachments/alice/abc.thumb.webp", thumb_path=None
         )
         message_repo.delete.assert_called_once_with(msg)
 
@@ -236,8 +248,7 @@ class TestAttachmentPurgeOnDelete:
         msg.conversation_id = conv.id
         msg.sender_id = alice
         msg.body = "hi"
-        msg.attachment_url = None
-        msg.attachment_thumb_url = None
+        msg.attachments = []
         message_repo.find_by_id.return_value = msg
         conv_repo.find_by_id.return_value = conv
 

@@ -4,6 +4,7 @@ All routes use absolute `/api/v1/…` paths. Kept flat (no nested
 blueprints) so Flask-WTF's `csrf.exempt(bp)` applied in `vbwd/app.py`
 actually exempts every endpoint below.
 """
+import base64
 import json
 from typing import Any
 
@@ -25,6 +26,9 @@ from vbwd.interfaces.file_storage import LocalFileStorage
 
 from plugins.meinchat.meinchat.repositories.contact_repository import (
     ContactRepository,
+)
+from plugins.meinchat.meinchat.repositories.attachment_repository import (
+    AttachmentRepository,
 )
 from plugins.meinchat.meinchat.repositories.conversation_repository import (
     ConversationRepository,
@@ -54,11 +58,13 @@ from plugins.meinchat.meinchat.services.conversation_service import (
     SelfConversationError,
 )
 from plugins.meinchat.meinchat.services.message_service import (
+    AttachmentNotFoundError,
     ConversationNotFoundError,
     MessageBodyTooLongError,
     MessageNotFoundError,
     MessageService,
     NotAConversationMemberError,
+    PlainAttachmentError,
 )
 from plugins.meinchat.meinchat.services.nickname_service import (
     NicknameBannedError,
@@ -79,6 +85,7 @@ from plugins.meinchat.meinchat.extensibility.identity import (
 from plugins.meinchat.meinchat.extensibility.lifecycle import (
     IConversationCapabilities,
 )
+from plugins.meinchat.meinchat.extensibility.pipeline import IPostSendHook
 from plugins.meinchat.meinchat.services.event_bus_factory import create_event_bus
 from plugins.meinchat.meinchat.services.rate_limit_policy import RateLimitPolicy
 from plugins.meinchat.meinchat.services.rate_limiter import (
@@ -235,6 +242,36 @@ def _device_directory():
         return NullDeviceDirectory()
 
 
+def _mark_e2e_delivered(messages, *, caller_user_id, device_id: str) -> None:
+    """Fire `IPostSendHook.on_sent(row, fetched_by=<device>)` for every
+    returned e2e row, so meinchat-plus records per-device delivery (and flips
+    `delivered_to_all_addressed_devices_at` once every addressed device has
+    fetched). `device_id` must be one of the CALLER's own active devices —
+    a foreign / unknown id is ignored (no marking, no error). No-op when no
+    hooks are registered (meinchat-alone). A throwing hook is logged, never
+    propagated, and never fails the read."""
+    own_devices = {
+        str(device.id): device
+        for device in _device_directory().lookup_active(caller_user_id)
+    }
+    device = own_devices.get(device_id)
+    if device is None:
+        return
+    hooks = registry.resolve_all(IPostSendHook)
+    if not hooks:
+        return
+    for row in messages:
+        if getattr(row, "protocol", "plain") == "plain":
+            continue
+        for hook in hooks:
+            try:
+                hook.on_sent(row, fetched_by=device)
+            except Exception as exc:  # delivery tracking must never fail a read
+                current_app.logger.error(
+                    "meinchat delivery hook %s failed on fetch: %s", hook, exc
+                )
+
+
 # Most-secure-first; negotiation picks the first mutually supported entry.
 _PROTOCOL_PREFERENCE = ["e2e_v1", "plain"]
 
@@ -314,6 +351,7 @@ def _message_service() -> MessageService:
         nickname_repo=NicknameRepository(db.session),
         attachment_service=_attachment_service(),
         event_bus=_event_bus(),
+        attachment_repo=AttachmentRepository(db.session),
     )
 
 
@@ -346,6 +384,9 @@ def _serialize_conversation_for_user(conv, user_id) -> dict:
         ),
         "last_message_preview": conv.last_message_preview,
         "unread_count": ConversationService.unread_for(user_id, conv),
+        # S28.3b — the pinned protocol lets the client route e2e_v1
+        # conversations through the meinchat-plus crypto provider.
+        "protocol": conv.protocol,
     }
 
 
@@ -626,10 +667,20 @@ def start_conversation():
 def list_messages(conv_id: str):
     before = request.args.get("before")
     limit = min(int(request.args.get("limit", 50)), 200)
+    # Optional: the fetching device id (e2e clients pass their own device so
+    # the server can record delivery). Query param or header, caller-owned.
+    fetching_device_id = request.args.get("device_id") or request.headers.get(
+        "X-Device-Id"
+    )
     try:
         msgs = _message_service().list_messages(
             conv_id, caller_user_id=g.user_id, before=before, limit=limit
         )
+        if fetching_device_id:
+            _mark_e2e_delivered(
+                msgs, caller_user_id=g.user_id, device_id=fetching_device_id
+            )
+            db.session.commit()
         return jsonify({"items": [m.to_dict() for m in msgs]}), 200
     except ConversationNotFoundError as exc:
         return jsonify({"error": str(exc)}), 404
@@ -646,9 +697,30 @@ def send_message(conv_id: str):
     if blocked is not None:
         return blocked
     data = request.get_json(silent=True) or {}
-    body = data.get("body", "")
+
+    # Protocol is pinned on the conversation at creation. For an e2e_v1
+    # conversation the client posts an opaque base64 `envelope_b64` (the
+    # server never sees plaintext); plain conversations post `body`.
+    conv = ConversationRepository(db.session).find_by_id(conv_id)
+    protocol = conv.protocol if conv is not None else "plain"
+    if protocol != "plain":
+        envelope_b64 = data.get("envelope_b64")
+        if not isinstance(envelope_b64, str):
+            return (
+                jsonify({"error": "envelope_b64 is required for this conversation"}),
+                400,
+            )
+        try:
+            send_body: Any = base64.b64decode(envelope_b64, validate=True)
+        except (ValueError, TypeError):
+            return jsonify({"error": "envelope_b64 must be valid base64"}), 400
+    else:
+        send_body = data.get("body", "")
+
     try:
-        msg = _message_service().send_text(conv_id, sender_user_id=g.user_id, body=body)
+        msg = _message_service().send_text(
+            conv_id, sender_user_id=g.user_id, body=send_body, protocol_hint=protocol
+        )
         db.session.commit()
         return jsonify(msg.to_dict()), 201
     except ConversationNotFoundError as exc:
@@ -710,6 +782,78 @@ def send_attachment_message(conv_id: str):
     except MessageBodyTooLongError as exc:
         db.session.rollback()
         return jsonify({"error": str(exc)}), 400
+
+
+@meinchat_bp.route("/api/v1/messaging/messages/<msg_id>/attachments", methods=["POST"])
+@require_auth
+def upload_e2e_attachment(msg_id: str):
+    """Attach a client-encrypted blob to an existing e2e message (S28.4).
+
+    JSON body: `{kind, ciphertext_b64, envelope_header, mime}`. The server
+    stores the opaque ciphertext and records the per-recipient key envelope;
+    it never decodes or resizes. Only the message's sender may attach.
+    """
+    blocked = _enforce_rate("attachment_send")
+    if blocked is not None:
+        return blocked
+    data = request.get_json(silent=True) or {}
+    kind = data.get("kind")
+    mime = data.get("mime")
+    envelope_header = data.get("envelope_header")
+    ciphertext_b64 = data.get("ciphertext_b64")
+    if not isinstance(ciphertext_b64, str):
+        return jsonify({"error": "ciphertext_b64 is required"}), 400
+    if not isinstance(envelope_header, dict) or not envelope_header:
+        return jsonify({"error": "envelope_header is required"}), 400
+    if not isinstance(mime, str) or not mime:
+        return jsonify({"error": "mime is required"}), 400
+    try:
+        ciphertext = base64.b64decode(ciphertext_b64, validate=True)
+    except (ValueError, TypeError):
+        return jsonify({"error": "ciphertext_b64 must be valid base64"}), 400
+    try:
+        row = _message_service().add_e2e_attachment(
+            msg_id,
+            caller_user_id=g.user_id,
+            kind=kind,
+            ciphertext=ciphertext,
+            envelope_header=envelope_header,
+            mime=mime,
+        )
+        db.session.commit()
+        return jsonify(row.to_dict()), 201
+    except MessageNotFoundError as exc:
+        db.session.rollback()
+        return jsonify({"error": str(exc)}), 404
+    except PlainAttachmentError as exc:
+        db.session.rollback()
+        return jsonify({"error": str(exc)}), 400
+    except AttachmentTooLargeError as exc:
+        db.session.rollback()
+        return jsonify({"error": str(exc)}), 413
+    except AttachmentTypeNotAllowedError as exc:
+        db.session.rollback()
+        return jsonify({"error": str(exc)}), 400
+
+
+@meinchat_bp.route("/api/v1/messaging/attachments/<attachment_id>", methods=["GET"])
+@require_auth
+def download_attachment(attachment_id: str):
+    """Return the raw stored bytes (opaque ciphertext for e2e attachments —
+    the client decrypts). Caller must be a participant of the conversation."""
+    try:
+        blob, mime = _message_service().get_attachment_blob(
+            attachment_id, caller_user_id=g.user_id
+        )
+    except AttachmentNotFoundError as exc:
+        return jsonify({"error": str(exc)}), 404
+    return Response(
+        blob,
+        mimetype="application/octet-stream",
+        headers={
+            "X-Attachment-Mime": mime,
+        },
+    )
 
 
 @meinchat_bp.route("/api/v1/messaging/conversations/<conv_id>/read", methods=["POST"])

@@ -96,10 +96,13 @@ class RetentionService:
         eligible, _ = self._eligible_rows()
         errors = 0
         for row in eligible:
-            for url in (
-                getattr(row, "attachment_url", None),
-                getattr(row, "attachment_thumb_url", None),
-            ):
+            # S28.4 — all attachment blobs (plain + e2e, fullres + thumb) live
+            # in the `meinchat_attachment` child table.
+            urls = [
+                getattr(att, "storage_url", None)
+                for att in getattr(row, "attachments", []) or []
+            ]
+            for url in urls:
                 path = _url_to_storage_path(url)
                 if path is None:
                     continue
