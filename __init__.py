@@ -104,11 +104,6 @@ class MeinchatPlugin(BasePlugin):
                 "group": "Meinchat",
             },
             {
-                "key": "meinchat.conversations.inspect",
-                "label": "Inspect conversations (moderation)",
-                "group": "Meinchat",
-            },
-            {
                 "key": "meinchat.transfers.view",
                 "label": "View token-transfer log",
                 "group": "Meinchat",

@@ -12,7 +12,7 @@ User identity (nickname directory) + address book + 1-on-1 messaging
 | Messaging | `messaging/conversations`, `messaging/conversations/<id>/messages`, `messaging/conversations/<id>/messages/attachment`, `messaging/conversations/<id>/read`, `messaging/conversations/<id>/messages/<mid>` |
 | SSE | `messaging/stream`, `messaging/stream/token` |
 | Token transfer | `token-transfer`, `token-transfer/history` |
-| Admin moderation | `admin/meinchat/nicknames`, `admin/meinchat/nicknames/<id>/{ban,unban}`, `admin/meinchat/conversations/<id>`, `admin/meinchat/transfers` |
+| Admin moderation | `admin/meinchat/nicknames`, `admin/meinchat/nicknames/<id>/{ban,unban}`, `admin/meinchat/transfers` (no conversation-content inspector — privacy) |
 
 ## Architecture
 

@@ -14,9 +14,6 @@ ADMIN_BAN_PATH = (
 ADMIN_UNBAN_PATH = (
     "/api/v1/admin/meinchat/nicknames/00000000-0000-0000-0000-000000000001/unban"
 )
-ADMIN_INSPECT_PATH = (
-    "/api/v1/admin/meinchat/conversations/00000000-0000-0000-0000-000000000001"
-)
 ADMIN_TRANSFERS_PATH = "/api/v1/admin/meinchat/transfers"
 
 
@@ -25,7 +22,6 @@ ADMIN_TRANSFERS_PATH = "/api/v1/admin/meinchat/transfers"
     [
         ("POST", ADMIN_BAN_PATH),
         ("POST", ADMIN_UNBAN_PATH),
-        ("GET", ADMIN_INSPECT_PATH),
         ("GET", ADMIN_TRANSFERS_PATH),
     ],
 )

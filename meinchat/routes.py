@@ -1084,38 +1084,9 @@ def admin_unban_nickname(user_id: str):
         return jsonify({"error": str(exc)}), 404
 
 
-@meinchat_bp.route("/api/v1/admin/meinchat/conversations/<conv_id>", methods=["GET"])
-@require_auth
-@require_admin
-@require_permission("meinchat.conversations.inspect")
-def admin_inspect_conversation(conv_id: str):
-    """Read-only inspector — returns the conversation row + every message
-    (including soft-deleted bodies, since hard delete already removes them)."""
-    conv = _conversation_service().get_by_id(conv_id)
-    if conv is None:
-        return jsonify({"error": f"conversation {conv_id} not found"}), 404
-
-    nickname_repo = NicknameRepository(db.session)
-    low_nick = nickname_repo.find_by_user_id(conv.participant_low_id)
-    high_nick = nickname_repo.find_by_user_id(conv.participant_high_id)
-    messages = MessageRepository(db.session).page(conv.id, limit=200)
-    return (
-        jsonify(
-            {
-                "conversation": {
-                    **conv.to_dict(),
-                    "participant_low_nickname": (
-                        low_nick.nickname if low_nick else None
-                    ),
-                    "participant_high_nickname": (
-                        high_nick.nickname if high_nick else None
-                    ),
-                },
-                "messages": [m.to_dict() for m in messages],
-            }
-        ),
-        200,
-    )
+# NOTE: the admin "conversation inspector" route was intentionally REMOVED
+# (privacy / product strategy: admins must not read conversation content or
+# history). Moderation is limited to nicknames + the transfer audit log.
 
 
 @meinchat_bp.route("/api/v1/admin/meinchat/transfers", methods=["GET"])
