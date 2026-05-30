@@ -35,6 +35,38 @@ Browser opens `EventSource('/messaging/stream?stream_token=<jwt>')`.
 Backend uses Redis pub/sub when available so fan-out crosses gunicorn
 workers; falls back to an in-process bus when Redis is unreachable.
 
+### ⚠ Reverse-proxy requirement — DO NOT buffer the SSE stream
+
+`GET /api/v1/messaging/stream` is a long-lived `text/event-stream`. The handler
+sets `X-Accel-Buffering: no`, but **every proxy hop must disable buffering** or
+the browser receives nothing until the connection closes — messages appear
+"only on refresh" (iOS uses polling, so it is *not* affected, which makes this
+look like an iOS-only / backend bug when it is actually a proxy-buffering one).
+Symptom check: `curl -N '.../messaging/stream?stream_token=…'` returns 0 bytes /
+`time_starttransfer=0` instead of an immediate `: connected` comment.
+
+nginx **consumes** the upstream `X-Accel-Buffering` header and does NOT forward
+it, so each hop must be configured (or re-assert it). For a typical
+browser → front proxy (e.g. HestiaCP) → instance nginx → gunicorn chain:
+
+```nginx
+location = /api/v1/messaging/stream {
+    proxy_pass        <upstream>;
+    proxy_http_version 1.1;
+    proxy_set_header  Connection "";
+    proxy_buffering   off;
+    proxy_cache       off;
+    proxy_read_timeout 3600s;
+    add_header X-Accel-Buffering no always;   # re-assert for the next hop
+}
+```
+
+This block ships in `vbwd-fe-user/nginx.{dev,prod}.conf*` (instance hop) **and**
+the front proxy templates in `vbwd-demo-instances/{setup.sh,fix-nginx-templates.sh}`
+(Hestia hop). Both hops are required. *(Root cause of the 2026-05-30 "messages
+not pushed to the browser on vbwd.cc" incident — the Hestia front proxy buffered
+the stream.)*
+
 ## Locked decisions (sprint 57)
 
 - Free nickname change, no cooldown.
