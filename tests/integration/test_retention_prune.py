@@ -162,7 +162,7 @@ def test_pruning_message_does_not_delete_conversation(app):
         db.session.commit()
 
         surviving = db.session.execute(
-            text("SELECT count(*) FROM conversation WHERE id = :cid"),
+            text("SELECT count(*) FROM meinchat_conversation WHERE id = :cid"),
             {"cid": str(conv_id)},
         ).scalar()
         assert surviving == 1
