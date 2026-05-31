@@ -6,16 +6,16 @@ from vbwd.models.base import BaseModel
 class TokenTransferRecord(BaseModel):
     """One row per completed peer-to-peer token transfer."""
 
-    __tablename__ = "token_transfer"
+    __tablename__ = "meinchat_token_transfer"
     __table_args__ = (
-        db.CheckConstraint("amount > 0", name="ck_token_transfer_positive"),
+        db.CheckConstraint("amount > 0", name="ck_meinchat_token_transfer_positive"),
         db.Index(
-            "ix_token_transfer_sender_executed",
+            "ix_meinchat_token_transfer_sender_executed",
             "sender_user_id",
             "executed_at",
         ),
         db.Index(
-            "ix_token_transfer_recipient_executed",
+            "ix_meinchat_token_transfer_recipient_executed",
             "recipient_user_id",
             "executed_at",
         ),

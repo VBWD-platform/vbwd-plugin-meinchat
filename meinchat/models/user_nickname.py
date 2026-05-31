@@ -6,7 +6,7 @@ from vbwd.models.base import BaseModel
 class UserNickname(BaseModel):
     """One nickname row per user. `nickname_ci` is the unique lookup key."""
 
-    __tablename__ = "user_nickname"
+    __tablename__ = "meinchat_user_nickname"
 
     user_id = db.Column(
         db.UUID(as_uuid=True),

@@ -6,16 +6,16 @@ from vbwd.models.base import BaseModel
 class UserContact(BaseModel):
     """One contact (peer user) saved by the `owner` user."""
 
-    __tablename__ = "user_contact"
+    __tablename__ = "meinchat_user_contact"
     __table_args__ = (
         db.UniqueConstraint(
             "owner_user_id",
             "contact_user_id",
-            name="uq_user_contact_owner_contact",
+            name="uq_meinchat_user_contact_owner_contact",
         ),
         db.CheckConstraint(
             "owner_user_id <> contact_user_id",
-            name="ck_user_contact_no_self",
+            name="ck_meinchat_user_contact_no_self",
         ),
     )
 
