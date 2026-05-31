@@ -15,25 +15,25 @@ from vbwd.models.base import BaseModel
 class Message(BaseModel):
     """One line in a conversation. Hard-deleted on both sides (Q4)."""
 
-    __tablename__ = "message"
+    __tablename__ = "meinchat_message"
     __table_args__ = (
         # Plain rows: body present and within the length cap.
         db.CheckConstraint(
             "protocol <> 'plain' OR (body IS NOT NULL AND length(body) <= 4000)",
-            name="ck_message_body_len",
+            name="ck_meinchat_message_body_len",
         ),
         # Exactly one of body / envelope is populated, matching the protocol.
         db.CheckConstraint(
             "(protocol = 'plain' AND body IS NOT NULL AND envelope IS NULL)"
             " OR (protocol <> 'plain' AND body IS NULL AND envelope IS NOT NULL)",
-            name="ck_message_body_or_envelope",
+            name="ck_meinchat_message_body_or_envelope",
         ),
         db.Index("ix_message_conversation_sent", "conversation_id", "sent_at"),
     )
 
     conversation_id = db.Column(
         db.UUID(as_uuid=True),
-        db.ForeignKey("conversation.id", ondelete="CASCADE"),
+        db.ForeignKey("meinchat_conversation.id", ondelete="CASCADE"),
         nullable=False,
     )
     sender_id = db.Column(

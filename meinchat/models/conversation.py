@@ -10,20 +10,20 @@ class Conversation(BaseModel):
     the byte-order-smaller UUID; `participant_high_id` the larger. This
     removes the A↔B / B↔A duplication concern at the DB level."""
 
-    __tablename__ = "conversation"
+    __tablename__ = "meinchat_conversation"
     __table_args__ = (
         db.UniqueConstraint(
             "participant_low_id",
             "participant_high_id",
-            name="uq_conversation_pair",
+            name="uq_meinchat_conversation_pair",
         ),
         db.CheckConstraint(
             "participant_low_id <> participant_high_id",
-            name="ck_conversation_no_self",
+            name="ck_meinchat_conversation_no_self",
         ),
         db.CheckConstraint(
             "participant_low_id < participant_high_id",
-            name="ck_conversation_ordered",
+            name="ck_meinchat_conversation_ordered",
         ),
     )
 

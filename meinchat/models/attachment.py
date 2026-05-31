@@ -41,7 +41,7 @@ class MeinchatAttachment(db.Model):  # type: ignore[name-defined]
     id = db.Column(db.UUID(as_uuid=True), primary_key=True, default=uuid4)
     message_id = db.Column(
         db.UUID(as_uuid=True),
-        db.ForeignKey("message.id", ondelete="CASCADE"),
+        db.ForeignKey("meinchat_message.id", ondelete="CASCADE"),
         nullable=False,
     )
     # 'fullres' | 'thumb' — kept as a checked VARCHAR rather than a PG ENUM so
