@@ -189,6 +189,15 @@ def _enforce_rate(category: str):
             window_seconds=window_seconds,
         )
     except RateLimitExceeded as exc:
+        # S33 — structured telemetry: one WARN line per meinchat 429 so a
+        # "users hit the cap" report is answerable with grep instead of a
+        # screenshot (category + user + retry-after).
+        current_app.logger.warning(
+            "429 category=%s user_id=%s retry_after_seconds=%d",
+            category,
+            g.user_id,
+            exc.retry_after_seconds,
+        )
         response = jsonify({"error": str(exc)})
         response.status_code = 429
         response.headers["Retry-After"] = str(exc.retry_after_seconds)

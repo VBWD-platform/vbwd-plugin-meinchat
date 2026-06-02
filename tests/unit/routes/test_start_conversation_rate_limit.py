@@ -359,3 +359,39 @@ class TestTokenTransferRegression:
         assert isinstance(result, Conversation)
         # Not a tuple — token_transfer_service relies on this.
         assert not isinstance(result, tuple)
+
+
+class TestMeinchatRateLimitTelemetry:
+    """S33 — the meinchat custom limiter (`_enforce_rate`) emits one WARN-level
+    structured log line on every 429 so "users hit the cap" reports are
+    answerable with grep instead of a screenshot."""
+
+    def test_meinchat_429_emits_warn_log_with_category_and_user(self, app, caplog):
+        import logging
+
+        from flask import g
+
+        from plugins.meinchat.meinchat import routes as meinchat_routes
+        from plugins.meinchat.meinchat.services.rate_limiter import RateLimitExceeded
+
+        user_id = uuid4()
+        fake_limiter = MagicMock()
+        fake_limiter.check.side_effect = RateLimitExceeded(
+            "message_send", retry_after_seconds=42
+        )
+
+        with app.test_request_context("/", headers={"X-Client-Platform": "web"}):
+            g.user_id = user_id
+            with patch.object(
+                meinchat_routes, "_rate_limiter", return_value=fake_limiter
+            ), patch.object(
+                meinchat_routes, "_meinchat_config", return_value=_test_config()
+            ):
+                with caplog.at_level(logging.WARNING):
+                    response = meinchat_routes._enforce_rate("message_send")
+
+        assert response is not None
+        assert response.status_code == 429
+        assert "429" in caplog.text, caplog.text
+        assert "message_send" in caplog.text
+        assert str(user_id) in caplog.text
