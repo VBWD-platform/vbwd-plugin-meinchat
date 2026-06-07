@@ -188,6 +188,133 @@ class MeinchatPlugin(BasePlugin):
         )
         start_retention_scheduler(app, cron_expression=cron_expression)
 
+    def register_event_handlers(self, event_bus) -> None:
+        """S60 — bridge the CMS ``contact_form.received`` event into meinchat.
+
+        Optional integration: meinchat declares no hard dependency on cms; it
+        simply subscribes to the event cms (and the email plugin) already
+        publish. When the payload's meinchat block is disabled/absent the
+        handler is a no-op, so the contact form behaves exactly as before.
+        """
+        import logging
+
+        logger = logging.getLogger(__name__)
+        plugin = self
+
+        def _on_contact_form_received(event_name, payload):
+            """Per-event bridge: build session-bound services from the CURRENT
+            request session and COMMIT.
+
+            A boot-captured session is never committed by the contact POST's
+            request lifecycle, so building the handler once at boot silently
+            drops every delivery. Rebuilding per event off ``db.session`` (the
+            request-scoped session) and committing here is what persists the
+            message. Best-effort — never breaks the contact POST.
+            """
+            from vbwd.extensions import db
+            from plugins.meinchat.meinchat.handlers.contact_form_handler import (
+                ContactFormHandler,
+            )
+            from plugins.meinchat.meinchat.repositories.conversation_repository import (
+                ConversationRepository,
+            )
+            from plugins.meinchat.meinchat.repositories.message_repository import (
+                MessageRepository,
+            )
+            from plugins.meinchat.meinchat.repositories.nickname_repository import (
+                NicknameRepository,
+            )
+            from plugins.meinchat.meinchat.services.bot_sender_provisioner import (
+                BotSenderProvisioner,
+            )
+            from plugins.meinchat.meinchat.services.conversation_service import (
+                ConversationService,
+            )
+            from plugins.meinchat.meinchat.services.message_service import (
+                MessageService,
+            )
+            from plugins.meinchat.meinchat.services.nickname_service import (
+                NicknameService,
+            )
+            from plugins.meinchat.meinchat.routes import _event_bus as _meinchat_sse_bus
+
+            session = db.session
+            try:
+                nickname_repository = NicknameRepository(session)
+                conversation_repository = ConversationRepository(session)
+                message_repository = MessageRepository(session)
+                ban_grace_days = plugin.get_config(
+                    "nickname_ban_grace_period_days",
+                    DEFAULT_CONFIG["nickname_ban_grace_period_days"],
+                )
+                nickname_service = NicknameService(
+                    nickname_repository, ban_grace_period_days=ban_grace_days
+                )
+                conversation_service = ConversationService(conversation_repository)
+                # Use meinchat's SSE/Redis bus (the one the SSE endpoint reads),
+                # NOT the core event bus — otherwise send_text's "message" event
+                # never reaches the recipient's live stream and the bot message
+                # only shows on refresh (unlike real-user messages).
+                message_service = MessageService(
+                    conversation_repository,
+                    message_repository,
+                    nickname_repository,
+                    event_bus=_meinchat_sse_bus(),
+                )
+                user_service = plugin._resolve_core_user_service()
+                user_repository = plugin._resolve_core_user_repository(session)
+                if user_service is None or user_repository is None:
+                    logger.warning(
+                        "[meinchat] core user service/repository unavailable — "
+                        "contact-form delivery skipped"
+                    )
+                    return
+                provisioner = BotSenderProvisioner(
+                    user_service=user_service,
+                    user_repository=user_repository,
+                    nickname_service=nickname_service,
+                    session=session,
+                )
+                handler = ContactFormHandler(
+                    provisioner=provisioner,
+                    user_repository=user_repository,
+                    nickname_repository=nickname_repository,
+                    conversation_service=conversation_service,
+                    message_service=message_service,
+                )
+                handler.handle(event_name, payload)
+                session.commit()
+            except Exception as error:  # noqa: BLE001 — never break the contact POST
+                logger.warning(
+                    "[meinchat] contact-form delivery failed: %s", error, exc_info=True
+                )
+                try:
+                    session.rollback()
+                except Exception:  # noqa: BLE001
+                    pass
+
+        event_bus.subscribe("contact_form.received", _on_contact_form_received)
+        logger.info(
+            "[meinchat] Subscribed to contact_form.received "
+            "(bot-sender bridge, per-event session)"
+        )
+
+    @staticmethod
+    def _resolve_core_user_service():
+        container = getattr(current_app, "container", None)
+        if container is None:
+            return None
+        try:
+            return container.user_service()
+        except Exception:  # noqa: BLE001 — optional bridge; degrade gracefully
+            return None
+
+    @staticmethod
+    def _resolve_core_user_repository(session):
+        from vbwd.repositories.user_repository import UserRepository
+
+        return UserRepository(session)
+
     def on_disable(self) -> None:
         from flask import current_app
 
