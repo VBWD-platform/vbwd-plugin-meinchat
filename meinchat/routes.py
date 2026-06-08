@@ -22,7 +22,7 @@ from vbwd.extensions import db
 from vbwd.middleware.auth import require_admin, require_auth, require_permission
 from vbwd.plugins.payment_route_helpers import check_plugin_enabled
 
-from vbwd.interfaces.file_storage import LocalFileStorage
+from vbwd.interfaces.file_storage import ManagerBackedFileStorage
 
 from plugins.meinchat.meinchat.repositories.contact_repository import (
     ContactRepository,
@@ -136,16 +136,13 @@ def _meinchat_config() -> dict:
 
 
 def _attachment_service() -> AttachmentService:
-    """Cached on the Flask app so the underlying `LocalFileStorage` is a
+    """Cached on the Flask app so the underlying storage adapter is a
     single instance across the process."""
     cached = getattr(current_app, "_meinchat_attachment_service", None)
     if cached is not None:
         return cached
     cfg = _meinchat_config()
-    storage = LocalFileStorage(
-        base_path=current_app.config.get("UPLOADS_BASE_PATH", "/app/uploads"),
-        base_url=current_app.config.get("UPLOADS_BASE_URL", "/uploads"),
-    )
+    storage = ManagerBackedFileStorage(current_app.container.filesystem_manager())
     svc = AttachmentService(
         storage=storage,
         max_bytes=int(cfg.get("attachment_max_bytes", 5 * 1024 * 1024)),

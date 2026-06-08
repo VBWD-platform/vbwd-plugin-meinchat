@@ -75,12 +75,9 @@ def _resolve_retention_policy(config_provider):
 
 
 def _resolve_storage(app):
-    from vbwd.interfaces.file_storage import LocalFileStorage
+    from vbwd.interfaces.file_storage import ManagerBackedFileStorage
 
-    return LocalFileStorage(
-        base_path=app.config.get("UPLOADS_BASE_PATH", "/app/uploads"),
-        base_url=app.config.get("UPLOADS_BASE_URL", "/uploads"),
-    )
+    return ManagerBackedFileStorage(app.container.filesystem_manager())
 
 
 def start_retention_scheduler(app, cron_expression=_DEFAULT_PRUNE_CRON):

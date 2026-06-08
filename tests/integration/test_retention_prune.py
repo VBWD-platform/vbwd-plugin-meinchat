@@ -6,7 +6,7 @@ real Postgres.
 2. Cascade-safety: pruning a message does NOT cascade-delete its parent
    `conversation` row.
 3. Attachment cleanup: a row with `attachment_url` whose object is written
-   to a temp-dir-backed LocalFileStorage — after prune both file + row gone.
+   to a temp-dir-backed uploads manager — after prune both file + row gone.
 
 Data is seeded through the repository / service layer (no raw INSERT), per
 feedback_no_direct_db_for_test_data.
@@ -19,7 +19,8 @@ from uuid import uuid4
 import pytest
 from sqlalchemy import text
 
-from vbwd.interfaces.file_storage import LocalFileStorage
+from vbwd.interfaces.file_storage import ManagerBackedFileStorage
+from vbwd.services.filesystem.local import LocalFilesystemManager
 from plugins.meinchat.meinchat.models.conversation import Conversation
 from plugins.meinchat.meinchat.models.message import Message
 from plugins.meinchat.meinchat.repositories.message_repository import (
@@ -173,7 +174,12 @@ def test_attachment_cleanup_removes_file_and_row(app, tmp_path):
     from vbwd.extensions import db
 
     with app.app_context():
-        storage = LocalFileStorage(base_path=str(tmp_path), base_url="/uploads")
+        manager = LocalFilesystemManager(
+            uploads_root=str(tmp_path),
+            uploads_url_base="/uploads",
+            namespace_roots={"uploads": str(tmp_path)},
+        )
+        storage = ManagerBackedFileStorage(manager)
         rel_path = f"meinchat/attachments/{uuid4().hex}/photo.webp"
         storage.save(b"image-bytes", rel_path)
         assert storage.exists(rel_path)
