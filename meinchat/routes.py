@@ -557,19 +557,23 @@ def get_limits():
     if error_response is not None:
         return error_response
     config = _meinchat_config()
+    # Read each knob defensively: DEFAULT_CONFIG (merged at initialize()) is the
+    # source of truth, but a runtime config dict from the store can drift (e.g.
+    # an instance whose stored config pre-dates S28). Falling back to the
+    # documented defaults keeps this endpoint from 500-ing on config drift.
     return (
         jsonify(
             {
                 "messages_retention_days_server": int(
-                    config["messages_retention_days_server"]
+                    config.get("messages_retention_days_server", 2)
                 ),
                 "messages_retention_days_client_suggested": int(
-                    config["messages_retention_days_client_suggested"]
+                    config.get("messages_retention_days_client_suggested", 10)
                 ),
                 "attachments_retention_days_server": int(
-                    config["attachments_retention_days_server"]
+                    config.get("attachments_retention_days_server", 2)
                 ),
-                "ciphertext_max_bytes": int(config["ciphertext_max_bytes"]),
+                "ciphertext_max_bytes": int(config.get("ciphertext_max_bytes", 16384)),
             }
         ),
         200,

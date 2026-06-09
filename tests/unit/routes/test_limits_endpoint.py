@@ -145,6 +145,25 @@ class TestLimitsEndpoint:
         assert set(body.keys()) == _FOUR_KEYS
         assert "enabled_protocols" not in body
 
+    def test_survives_config_drift_missing_keys(self, app, client):
+        """Regression — a runtime config that OMITS the four retention/size
+        knobs (e.g. an instance whose stored config pre-dates S28) must NOT
+        500. The route reads each key defensively (`.get` with the documented
+        default), so a drifted config falls back to defaults and returns 200
+        with the four integer fields."""
+        drifted_config = {"nickname_ban_grace_period_days": 30}
+        with _enabled_limits_harness(app, uuid4(), drifted_config):
+            response = _get_limits(client)
+        assert response.status_code == 200
+        body = response.get_json()
+        assert set(body.keys()) == _FOUR_KEYS
+        for key in _FOUR_KEYS:
+            assert isinstance(body[key], int), f"{key} must serialize as int"
+        assert body["messages_retention_days_server"] == 2
+        assert body["messages_retention_days_client_suggested"] == 10
+        assert body["attachments_retention_days_server"] == 2
+        assert body["ciphertext_max_bytes"] == 16384
+
     @pytest.mark.skip(
         reason="DEFERRED to S28.3b: meinchat-plus does not exist in phase 1. "
         "The phase-1 master doc (s28-phase1-retention-and-config.md §3) "
