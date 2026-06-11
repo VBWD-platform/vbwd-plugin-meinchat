@@ -192,3 +192,152 @@ class TestMetaValidation:
         meta = {"kind": "future_thing", "anything": [1, 2, 3]}
         msg = service.send_text(conv.id, sender_user_id=alice, body="x", meta=meta)
         assert msg.meta == meta
+
+
+class TestBotChoicesTextValidation:
+    """S70.3 — a ``bot_choices`` meta may carry an optional clean prompt
+    ``text`` (shown instead of the numbered body on card clients)."""
+
+    def test_accepts_optional_text(self, service, seeded_conversation):
+        conv, alice = seeded_conversation
+        meta = {
+            "kind": "bot_choices",
+            "text": "Choose a plan:",
+            "choices": [{"label": "Pro", "action_data": "a:b:c"}],
+        }
+        msg = service.send_text(conv.id, sender_user_id=alice, body="x", meta=meta)
+        assert msg.meta == meta
+
+    def test_rejects_non_string_text(self, service, seeded_conversation):
+        conv, alice = seeded_conversation
+        with pytest.raises(ValueError):
+            service.send_text(
+                conv.id,
+                sender_user_id=alice,
+                body="x",
+                meta={
+                    "kind": "bot_choices",
+                    "text": 7,
+                    "choices": [{"label": "Pro", "action_data": "a:b:c"}],
+                },
+            )
+
+
+class TestBotMenuValidation:
+    """S70.3 — ``bot_menu`` lists command rows ``{command, description}``."""
+
+    def test_accepts_valid_bot_menu(self, service, seeded_conversation):
+        conv, alice = seeded_conversation
+        meta = {
+            "kind": "bot_menu",
+            "commands": [
+                {"command": "/tarifs", "description": "Browse tarif plans"},
+                {"command": "/help", "description": "show this menu"},
+            ],
+        }
+        msg = service.send_text(conv.id, sender_user_id=alice, body="x", meta=meta)
+        assert msg.meta == meta
+
+    def test_rejects_bot_menu_without_commands_list(self, service, seeded_conversation):
+        conv, alice = seeded_conversation
+        with pytest.raises(ValueError):
+            service.send_text(
+                conv.id,
+                sender_user_id=alice,
+                body="x",
+                meta={"kind": "bot_menu", "commands": "nope"},
+            )
+
+    def test_rejects_command_row_missing_command(self, service, seeded_conversation):
+        conv, alice = seeded_conversation
+        with pytest.raises(ValueError):
+            service.send_text(
+                conv.id,
+                sender_user_id=alice,
+                body="x",
+                meta={
+                    "kind": "bot_menu",
+                    "commands": [{"description": "no command field"}],
+                },
+            )
+
+    def test_rejects_command_row_non_string_description(
+        self, service, seeded_conversation
+    ):
+        conv, alice = seeded_conversation
+        with pytest.raises(ValueError):
+            service.send_text(
+                conv.id,
+                sender_user_id=alice,
+                body="x",
+                meta={
+                    "kind": "bot_menu",
+                    "commands": [{"command": "/x", "description": 9}],
+                },
+            )
+
+
+class TestBotCartValidation:
+    """S70.3 — ``bot_cart`` carries priced line items + a total + currency."""
+
+    def _valid_cart(self):
+        return {
+            "kind": "bot_cart",
+            "items": [
+                {
+                    "name": "Pro",
+                    "quantity": 1,
+                    "unit_price": "29.00",
+                    "line_total": "29.00",
+                }
+            ],
+            "total": "29.00",
+            "currency": "EUR",
+        }
+
+    def test_accepts_valid_bot_cart(self, service, seeded_conversation):
+        conv, alice = seeded_conversation
+        meta = self._valid_cart()
+        msg = service.send_text(conv.id, sender_user_id=alice, body="x", meta=meta)
+        assert msg.meta == meta
+
+    def test_accepts_empty_cart(self, service, seeded_conversation):
+        conv, alice = seeded_conversation
+        meta = {"kind": "bot_cart", "items": [], "total": 0, "currency": "EUR"}
+        msg = service.send_text(conv.id, sender_user_id=alice, body="x", meta=meta)
+        assert msg.meta == meta
+
+    def test_rejects_items_not_a_list(self, service, seeded_conversation):
+        conv, alice = seeded_conversation
+        bad = self._valid_cart()
+        bad["items"] = "nope"
+        with pytest.raises(ValueError):
+            service.send_text(conv.id, sender_user_id=alice, body="x", meta=bad)
+
+    def test_rejects_item_missing_name(self, service, seeded_conversation):
+        conv, alice = seeded_conversation
+        bad = self._valid_cart()
+        del bad["items"][0]["name"]
+        with pytest.raises(ValueError):
+            service.send_text(conv.id, sender_user_id=alice, body="x", meta=bad)
+
+    def test_rejects_non_integer_quantity(self, service, seeded_conversation):
+        conv, alice = seeded_conversation
+        bad = self._valid_cart()
+        bad["items"][0]["quantity"] = "two"
+        with pytest.raises(ValueError):
+            service.send_text(conv.id, sender_user_id=alice, body="x", meta=bad)
+
+    def test_rejects_missing_total(self, service, seeded_conversation):
+        conv, alice = seeded_conversation
+        bad = self._valid_cart()
+        del bad["total"]
+        with pytest.raises(ValueError):
+            service.send_text(conv.id, sender_user_id=alice, body="x", meta=bad)
+
+    def test_rejects_non_string_currency(self, service, seeded_conversation):
+        conv, alice = seeded_conversation
+        bad = self._valid_cart()
+        bad["currency"] = 9
+        with pytest.raises(ValueError):
+            service.send_text(conv.id, sender_user_id=alice, body="x", meta=bad)

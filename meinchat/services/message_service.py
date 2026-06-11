@@ -71,8 +71,13 @@ def _validate_meta(meta: Dict[str, Any]) -> None:
 
     Known kinds:
       * ``bot_choices`` — ``choices`` is a list of
-        ``{label:str, action_data:str, hint?:str}``.
+        ``{label:str, action_data:str, hint?:str}``; optional ``text`` is a
+        clean prompt string.
       * ``bot_action`` — ``action_data`` is a non-empty str.
+      * ``bot_menu`` — ``commands`` is a list of ``{command:str, description:str}``.
+      * ``bot_cart`` — ``items`` is a list of
+        ``{name:str, quantity:int, unit_price, line_total}``, plus a ``total``
+        and a ``currency`` str.
     An unknown ``kind`` carries no shape contract (additive — future client-only
     kinds need no backend change) but is still size-capped.
     """
@@ -89,26 +94,74 @@ def _validate_meta(meta: Dict[str, Any]) -> None:
 
     kind = meta.get("kind")
     if kind == "bot_choices":
-        choices = meta.get("choices")
-        if not isinstance(choices, list) or not choices:
-            raise ValueError("bot_choices meta requires a non-empty 'choices' list")
-        for choice in choices:
-            if not isinstance(choice, dict):
-                raise ValueError("each choice must be an object")
-            if not isinstance(choice.get("label"), str) or not choice["label"]:
-                raise ValueError("each choice requires a non-empty 'label' string")
-            if (
-                not isinstance(choice.get("action_data"), str)
-                or not choice["action_data"]
-            ):
-                raise ValueError(
-                    "each choice requires a non-empty 'action_data' string"
-                )
-            if "hint" in choice and not isinstance(choice["hint"], str):
-                raise ValueError("choice 'hint' must be a string")
+        _validate_bot_choices_meta(meta)
     elif kind == "bot_action":
         if not isinstance(meta.get("action_data"), str) or not meta["action_data"]:
             raise ValueError("bot_action meta requires a non-empty 'action_data'")
+    elif kind == "bot_menu":
+        _validate_bot_menu_meta(meta)
+    elif kind == "bot_cart":
+        _validate_bot_cart_meta(meta)
+
+
+def _validate_bot_choices_meta(meta: Dict[str, Any]) -> None:
+    choices = meta.get("choices")
+    if not isinstance(choices, list) or not choices:
+        raise ValueError("bot_choices meta requires a non-empty 'choices' list")
+    for choice in choices:
+        if not isinstance(choice, dict):
+            raise ValueError("each choice must be an object")
+        if not isinstance(choice.get("label"), str) or not choice["label"]:
+            raise ValueError("each choice requires a non-empty 'label' string")
+        if not isinstance(choice.get("action_data"), str) or not choice["action_data"]:
+            raise ValueError("each choice requires a non-empty 'action_data' string")
+        if "hint" in choice and not isinstance(choice["hint"], str):
+            raise ValueError("choice 'hint' must be a string")
+    if "text" in meta and not isinstance(meta["text"], str):
+        raise ValueError("bot_choices 'text' must be a string")
+
+
+def _validate_bot_menu_meta(meta: Dict[str, Any]) -> None:
+    commands = meta.get("commands")
+    if not isinstance(commands, list):
+        raise ValueError("bot_menu meta requires a 'commands' list")
+    for command_row in commands:
+        if not isinstance(command_row, dict):
+            raise ValueError("each bot_menu command must be an object")
+        if (
+            not isinstance(command_row.get("command"), str)
+            or not command_row["command"]
+        ):
+            raise ValueError(
+                "each bot_menu command requires a non-empty 'command' string"
+            )
+        if not isinstance(command_row.get("description"), str):
+            raise ValueError("each bot_menu command requires a 'description' string")
+
+
+def _validate_bot_cart_meta(meta: Dict[str, Any]) -> None:
+    items = meta.get("items")
+    if not isinstance(items, list):
+        raise ValueError("bot_cart meta requires an 'items' list")
+    for item in items:
+        if not isinstance(item, dict):
+            raise ValueError("each bot_cart item must be an object")
+        if not isinstance(item.get("name"), str) or not item["name"]:
+            raise ValueError("each bot_cart item requires a non-empty 'name' string")
+        if not _is_integer(item.get("quantity")):
+            raise ValueError("each bot_cart item requires an integer 'quantity'")
+        for amount_field in ("unit_price", "line_total"):
+            if amount_field not in item:
+                raise ValueError(f"each bot_cart item requires a '{amount_field}'")
+    if "total" not in meta:
+        raise ValueError("bot_cart meta requires a 'total'")
+    if not isinstance(meta.get("currency"), str):
+        raise ValueError("bot_cart meta requires a 'currency' string")
+
+
+def _is_integer(value: Any) -> bool:
+    """True for a real integer (a JSON ``bool`` is not an integer quantity)."""
+    return isinstance(value, int) and not isinstance(value, bool)
 
 
 def _url_to_storage_path(url: Optional[str]) -> Optional[str]:
