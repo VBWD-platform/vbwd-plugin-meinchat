@@ -71,6 +71,51 @@ def test_prefix_search_is_case_insensitive_and_excludes_caller(app):
 
 
 @pytest.mark.integration
+def test_provisioned_bot_user_is_findable_in_nickname_search(app):
+    """A BOT-role user provisioned through BotSenderProvisioner appears in the
+    user-facing nickname search, so any user can find it and start a chat.
+
+    This is the findability guarantee the bot-meinchat refinement relies on:
+    nickname search filters only on banned / search_hidden, NOT on role, so a
+    provisioned (un-banned, visible) BOT user is found like any other peer — no
+    meinchat-side change is needed."""
+    from vbwd.extensions import db
+    from vbwd.models.enums import UserRole
+    from vbwd.repositories.user_repository import UserRepository
+
+    from plugins.meinchat.meinchat.repositories.nickname_repository import (
+        NicknameRepository,
+    )
+    from plugins.meinchat.meinchat.services.bot_sender_provisioner import (
+        BotSenderProvisioner,
+    )
+    from plugins.meinchat.meinchat.services.nickname_service import NicknameService
+
+    with app.app_context():
+        session = db.session
+        user_repo = UserRepository(session)
+        provisioner = BotSenderProvisioner(
+            user_service=app.container.user_service(),
+            user_repository=user_repo,
+            nickname_service=NicknameService(NicknameRepository(session)),
+            session=session,
+        )
+
+        bot_user_id = provisioner.ensure_bot_sender(
+            "findable-bot@bot.local", "assistantbot"
+        )
+        db.session.commit()
+
+        # The provisioned account really is a BOT.
+        assert user_repo.find_by_id(bot_user_id).role == UserRole.BOT
+
+        # And it shows up in the user-facing prefix search a human would run.
+        repo = NicknameRepository(session)
+        hits = {row.nickname for row in repo.search_prefix("assistant")}
+        assert "assistantbot" in hits
+
+
+@pytest.mark.integration
 def test_paged_listing_returns_correct_total(app):
     from vbwd.extensions import db
 
