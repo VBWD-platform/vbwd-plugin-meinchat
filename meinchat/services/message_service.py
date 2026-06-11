@@ -57,8 +57,58 @@ class PlainAttachmentError(ValueError):
 
 
 _BODY_MAX = 4000
+# Cap the serialized `meta` so a structured payload can never bloat a row or
+# the SSE stream. 8 KB comfortably fits a choice menu while bounding abuse.
+_META_MAX_SERIALIZED_BYTES = 8 * 1024
 
 logger = logging.getLogger(__name__)
+
+
+def _validate_meta(meta: Dict[str, Any]) -> None:
+    """Reject a malformed/oversize structured `meta` with a clear ``ValueError``
+    (the route maps it to 400). `action_data` stays opaque — its content is
+    never parsed or trusted here; only shape + size are enforced.
+
+    Known kinds:
+      * ``bot_choices`` — ``choices`` is a list of
+        ``{label:str, action_data:str, hint?:str}``.
+      * ``bot_action`` — ``action_data`` is a non-empty str.
+    An unknown ``kind`` carries no shape contract (additive — future client-only
+    kinds need no backend change) but is still size-capped.
+    """
+    import json
+
+    if not isinstance(meta, dict):
+        raise ValueError("meta must be an object")
+    try:
+        serialized = json.dumps(meta, ensure_ascii=False)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("meta must be JSON-serializable") from exc
+    if len(serialized.encode("utf-8")) > _META_MAX_SERIALIZED_BYTES:
+        raise ValueError("meta exceeds the maximum serialized size")
+
+    kind = meta.get("kind")
+    if kind == "bot_choices":
+        choices = meta.get("choices")
+        if not isinstance(choices, list) or not choices:
+            raise ValueError("bot_choices meta requires a non-empty 'choices' list")
+        for choice in choices:
+            if not isinstance(choice, dict):
+                raise ValueError("each choice must be an object")
+            if not isinstance(choice.get("label"), str) or not choice["label"]:
+                raise ValueError("each choice requires a non-empty 'label' string")
+            if (
+                not isinstance(choice.get("action_data"), str)
+                or not choice["action_data"]
+            ):
+                raise ValueError(
+                    "each choice requires a non-empty 'action_data' string"
+                )
+            if "hint" in choice and not isinstance(choice["hint"], str):
+                raise ValueError("choice 'hint' must be a string")
+    elif kind == "bot_action":
+        if not isinstance(meta.get("action_data"), str) or not meta["action_data"]:
+            raise ValueError("bot_action meta requires a non-empty 'action_data'")
 
 
 def _url_to_storage_path(url: Optional[str]) -> Optional[str]:
@@ -153,7 +203,10 @@ class MessageService:
         sender_user_id: UUID,
         body: str,
         protocol_hint: str = "plain",
+        meta: Optional[Dict[str, Any]] = None,
     ) -> Message:
+        if meta is not None:
+            _validate_meta(meta)
         conv = self._conv_repo.find_by_id(conversation_id)
         if conv is None:
             raise ConversationNotFoundError(f"conversation {conversation_id} not found")
@@ -197,6 +250,7 @@ class MessageService:
         msg.protocol = encoded.protocol
         msg.body = encoded.body
         msg.envelope = encoded.envelope
+        msg.meta = meta
         msg.sent_at = now
         self._message_repo.save(msg)
 

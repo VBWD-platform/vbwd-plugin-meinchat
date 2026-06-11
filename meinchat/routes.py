@@ -724,12 +724,23 @@ def send_message(conv_id: str):
             send_body: Any = base64.b64decode(envelope_b64, validate=True)
         except (ValueError, TypeError):
             return jsonify({"error": "envelope_b64 must be valid base64"}), 400
+        # e2e (`envelope`) rows never carry structured `meta` — rich choices
+        # ride only the plain path (S70.0).
+        meta = None
     else:
         send_body = data.get("body", "")
+        # Optional S70.0 structured/interactive content (bot choice cards / a
+        # tapped card's action). Validated + size-capped in the service; absent
+        # `meta` is the unchanged legacy path.
+        meta = data.get("meta")
 
     try:
         msg = _message_service().send_text(
-            conv_id, sender_user_id=g.user_id, body=send_body, protocol_hint=protocol
+            conv_id,
+            sender_user_id=g.user_id,
+            body=send_body,
+            protocol_hint=protocol,
+            meta=meta,
         )
         db.session.commit()
         return jsonify(msg.to_dict()), 201

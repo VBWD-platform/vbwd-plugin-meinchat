@@ -49,6 +49,13 @@ class Message(BaseModel):
     protocol = db.Column(
         db.String(32), nullable=False, server_default="plain", default="plain"
     )
+    # S70.0 — generic, nullable structured/interactive content riding alongside
+    # `body`. A bot choice prompt carries {"kind":"bot_choices","choices":[…]};
+    # a tapped card carries {"kind":"bot_action","action_data":"…"}. `body`
+    # stays the human-readable + fallback rendering, so clients that ignore
+    # `meta` behave exactly as today (Liskov). Validated + size-capped at the
+    # service boundary; `action_data` is opaque (never parsed here).
+    meta = db.Column(db.JSON, nullable=True)
     # S28.4 — attachments moved to the `meinchat_attachment` child table
     # (`self.attachments`); the legacy per-row attachment_* columns are gone.
 
@@ -78,6 +85,7 @@ class Message(BaseModel):
             "sender_id": str(self.sender_id),
             "sender_nickname": self.sender_nickname,
             "body": self.body,
+            "meta": self.meta,
             "protocol": self.protocol,
             "sent_at": self.sent_at.isoformat() if self.sent_at else None,
             "delivered_at": self.delivered_at.isoformat()
