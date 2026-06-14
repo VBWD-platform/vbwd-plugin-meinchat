@@ -22,9 +22,21 @@ class MessageRepository:
     ) -> List[Message]:
         """Return up to `limit` messages, newest first. If `before` is set,
         returns messages older than that message's `sent_at`."""
-        query = self._session.query(Message).filter(
-            Message.conversation_id == conversation_id
-        )
+        return self._page(Message.conversation_id == conversation_id, before, limit)
+
+    def page_room(
+        self,
+        room_id: UUID,
+        *,
+        before: Optional[UUID] = None,
+        limit: int = 50,
+    ) -> List[Message]:
+        """Room sibling of `page` — same cursor pagination, parent = room_id
+        (S86.1 D2). One pagination implementation, two parent filters (DRY)."""
+        return self._page(Message.room_id == room_id, before, limit)
+
+    def _page(self, parent_filter, before: Optional[UUID], limit: int) -> List[Message]:
+        query = self._session.query(Message).filter(parent_filter)
         if before is not None:
             pivot = self._session.query(Message).get(before)
             if pivot is not None:

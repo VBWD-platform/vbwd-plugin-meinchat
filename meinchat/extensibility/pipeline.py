@@ -35,6 +35,14 @@ class EncodedBody:
     envelope: Optional[bytes] = None
 
 
+class BodyCodecError(ValueError):
+    """A registered `IBodyCodec` rejected the body/envelope (bad shape, size,
+    or unknown recipient). Subclasses `ValueError` so the send routes map it to
+    a 400 through their existing `ValueError` handler — meinchat owns the codec
+    port, so its failure contract lives here (the route never imports a plugin
+    error type). meinchat-plus's envelope-validation errors subclass this."""
+
+
 @runtime_checkable
 class IBodyCodec(Protocol):
     def encode(self, ctx: SendContext) -> EncodedBody:

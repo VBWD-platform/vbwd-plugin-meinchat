@@ -13,7 +13,16 @@ from __future__ import annotations
 
 import queue
 import time
-from typing import Any, Callable, Dict, Iterator, Optional, Protocol, runtime_checkable
+from typing import (
+    Any,
+    Callable,
+    Dict,
+    Iterator,
+    List,
+    Optional,
+    Protocol,
+    runtime_checkable,
+)
 
 
 class Subscription:
@@ -28,8 +37,15 @@ class Subscription:
         channel: str,
         heartbeat_seconds: Optional[float] = None,
         on_close: Optional[Callable[["Subscription"], None]] = None,
+        channels: Optional[List[str]] = None,
     ) -> None:
         self._channel = channel
+        # A subscription may be registered under several channels (S86.1 D5 —
+        # one SSE stream fans a user's own channel plus each of their rooms).
+        # `channels` lists them all so the owning bus can unregister this
+        # subscription from every bucket on close; `channel` stays the primary
+        # for back-compat single-channel callers.
+        self._channels = list(channels) if channels else [channel]
         self._queue: "queue.Queue[Any]" = queue.Queue()
         self._closed = False
         self._heartbeat_seconds = heartbeat_seconds
@@ -38,6 +54,10 @@ class Subscription:
     @property
     def channel(self) -> str:
         return self._channel
+
+    @property
+    def channels(self) -> List[str]:
+        return list(self._channels)
 
     def deliver(self, event: Dict[str, Any]) -> None:
         if not self._closed:
@@ -86,6 +106,11 @@ class EventBus(Protocol):
 
     def subscribe(
         self, channel: str, heartbeat_seconds: Optional[float] = None
+    ) -> Subscription:
+        ...
+
+    def subscribe_many(
+        self, channels: List[str], heartbeat_seconds: Optional[float] = None
     ) -> Subscription:
         ...
 

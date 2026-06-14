@@ -24,6 +24,9 @@ CATEGORIES = (
     "nickname_search",
     "message_send",
     "attachment_send",
+    # S86.3 — public bot-widget "Start Conversation" (keyed by client IP, since
+    # the visitor is anonymous until a GUEST is provisioned).
+    "widget_guest_start",
 )
 
 
@@ -33,6 +36,7 @@ _BASELINE_FALLBACK: Dict[str, Tuple[int, int]] = {
     "nickname_search": (30, 60),
     "message_send": (30, 60),
     "attachment_send": (6, 3600),
+    "widget_guest_start": (5, 3600),
 }
 
 # Pre-S26 instances configured these two via flat keys; honour them when the

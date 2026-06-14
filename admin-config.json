@@ -260,6 +260,36 @@
           "description": "Server-side lifetime cap for each SSE stream. On reaching it the stream closes and the browser's EventSource auto-reconnects — prevents an idle connection from pinning a worker/DB connection indefinitely."
         }
       ]
+    },
+    {
+      "id": "guest-economy",
+      "label": "Guest economy",
+      "fields": [
+        {
+          "key": "guest_economy_enabled",
+          "label": "Meter guest bot-widget chats",
+          "component": "checkbox",
+          "description": "When on, a public bot-widget guest is granted initial tokens on activation and spends them per word (questions AND bot answers, 1 token = 1 word). When off, guest chats are free (no grant, no metering)."
+        },
+        {
+          "key": "guest_initial_tokens",
+          "label": "Initial guest tokens (granted on activation)",
+          "component": "input",
+          "inputType": "number",
+          "min": 0,
+          "max": 1000000,
+          "description": "Tokens credited to a freshly provisioned widget guest. Granted only to a NEW guest — a returning guest reusing its session is not re-granted."
+        },
+        {
+          "key": "guest_token_cost_per_word",
+          "label": "Token cost per word",
+          "component": "input",
+          "inputType": "number",
+          "min": 0,
+          "max": 1000000,
+          "description": "Tokens charged per word (1 token = 1 word). Both the guest's question words and the bot's answer words are debited from the guest. Set 0 to disable per-word charging."
+        }
+      ]
     }
   ]
 }

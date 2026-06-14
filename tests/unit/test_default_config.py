@@ -177,6 +177,84 @@ class TestRetentionConfig:
         assert fields_by_key["retention_prune_cron"]["inputType"] == "text"
 
 
+# ── S86.3 3c — guest token economy (D11) ────────────────────────────────────
+
+# REVISED D11 — word-based billing (1 token = 1 word). The flat per-round keys
+# `guest_question_token_cost`/`guest_answer_token_cost` are REMOVED and replaced
+# by `guest_token_cost_per_word`.
+_GUEST_ECONOMY_DEFAULTS = {
+    "guest_economy_enabled": True,
+    "guest_initial_tokens": 20,
+    "guest_token_cost_per_word": 1,
+}
+_REMOVED_GUEST_ECONOMY_KEYS = (
+    "guest_question_token_cost",
+    "guest_answer_token_cost",
+)
+
+
+class TestGuestEconomyConfig:
+    """REVISED D11 — the word-based guest token-economy knobs must agree across
+    all three homes: DEFAULT_CONFIG (runtime), config.json (schema),
+    admin-config.json (editable fields). The flat per-round keys are gone."""
+
+    def test_default_config_ships_guest_economy_keys(self):
+        from plugins.meinchat import DEFAULT_CONFIG
+
+        for key, expected in _GUEST_ECONOMY_DEFAULTS.items():
+            assert key in DEFAULT_CONFIG, f"DEFAULT_CONFIG missing required key {key}"
+            assert DEFAULT_CONFIG[key] == expected
+
+    def test_default_config_drops_flat_round_keys(self):
+        from plugins.meinchat import DEFAULT_CONFIG
+
+        for key in _REMOVED_GUEST_ECONOMY_KEYS:
+            assert (
+                key not in DEFAULT_CONFIG
+            ), f"DEFAULT_CONFIG still ships removed {key}"
+
+    def test_config_json_documents_guest_economy_keys(self, config_schema):
+        for key in _GUEST_ECONOMY_DEFAULTS:
+            assert key in config_schema, f"config.json missing schema entry for {key}"
+            entry = config_schema[key]
+            assert entry["type"] in ("boolean", "integer")
+            assert entry[
+                "description"
+            ], f"config.json[{key}] must carry a non-empty description"
+
+    def test_config_json_drops_flat_round_keys(self, config_schema):
+        for key in _REMOVED_GUEST_ECONOMY_KEYS:
+            assert (
+                key not in config_schema
+            ), f"config.json still documents removed {key}"
+
+    def test_config_json_defaults_match_default_config(self, config_schema):
+        for key, expected in _GUEST_ECONOMY_DEFAULTS.items():
+            assert config_schema[key]["default"] == expected
+
+    def test_admin_config_exposes_guest_economy_fields(self, admin_config_schema):
+        fields_by_key = {
+            field["key"]: field
+            for tab in admin_config_schema["tabs"]
+            for field in tab["fields"]
+        }
+        for key in _GUEST_ECONOMY_DEFAULTS:
+            assert key in fields_by_key, f"admin-config.json missing field for {key}"
+        for key in _REMOVED_GUEST_ECONOMY_KEYS:
+            assert (
+                key not in fields_by_key
+            ), f"admin-config.json still has removed {key}"
+        assert fields_by_key["guest_economy_enabled"]["component"] == "checkbox"
+        for cost_key in (
+            "guest_initial_tokens",
+            "guest_token_cost_per_word",
+        ):
+            field = fields_by_key[cost_key]
+            assert field["component"] == "input"
+            assert field["inputType"] == "number"
+            assert field.get("min", 0) >= 0
+
+
 class TestAdminConfigJson:
     def test_has_rate_limit_tabs(self, admin_config_schema):
         tab_ids = {tab["id"] for tab in admin_config_schema["tabs"]}

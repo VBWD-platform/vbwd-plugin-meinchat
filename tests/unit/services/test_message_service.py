@@ -152,6 +152,57 @@ class TestMarkRead:
         with pytest.raises(NotAConversationMemberError):
             service.mark_read(conv.id, reader_user_id=uuid4())
 
+    def test_mark_read_dispatches_badge_only_push_event(
+        self, service, conv_repo, monkeypatch
+    ):
+        """S68 — after mark_read commits, dispatch a badge_only PushEvent so
+        the reader's OTHER devices update their badge."""
+        from plugins.meinchat.meinchat.services import message_service as module
+
+        alice, bob = uuid4(), uuid4()
+        conv = _conversation(alice, bob)
+        conv_repo.find_by_id.return_value = conv
+        dispatched: list = []
+        monkeypatch.setattr(
+            module.push_dispatcher_registry,
+            "dispatch",
+            lambda event, **_kwargs: dispatched.append(event),
+        )
+
+        service.mark_read(conv.id, reader_user_id=alice)
+
+        assert len(dispatched) == 1
+        event = dispatched[0]
+        assert event.kind == "badge_only"
+        assert event.app == "meinchat"
+        # The recipient is the reader themself — we update THEIR devices.
+        assert event.recipient_user_id == alice
+        assert event.conversation is conv
+        assert event.message is None
+
+    def test_mark_read_dispatch_passes_originating_token(
+        self, service, conv_repo, monkeypatch
+    ):
+        """The reader's own device token threads through so the hook can
+        suppress the originating device."""
+        from plugins.meinchat.meinchat.services import message_service as module
+
+        alice, bob = uuid4(), uuid4()
+        conv = _conversation(alice, bob)
+        conv_repo.find_by_id.return_value = conv
+        dispatched: list = []
+        monkeypatch.setattr(
+            module.push_dispatcher_registry,
+            "dispatch",
+            lambda event, **_kwargs: dispatched.append(event),
+        )
+
+        service.mark_read(
+            conv.id, reader_user_id=alice, originating_device_token="device-a"
+        )
+
+        assert dispatched[0].originating_device_token == "device-a"
+
 
 class TestDeleteMessage:
     def test_hard_deletes_and_returns_info_for_sse(

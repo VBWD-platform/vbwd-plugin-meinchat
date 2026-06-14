@@ -29,12 +29,27 @@ class Message(BaseModel):
             name="ck_meinchat_message_body_or_envelope",
         ),
         db.Index("ix_message_conversation_sent", "conversation_id", "sent_at"),
+        # S86.1 D2 — a message belongs to EXACTLY one parent: a 1:1
+        # conversation or an N-party room, never both and never neither.
+        db.CheckConstraint(
+            "(conversation_id IS NULL) <> (room_id IS NULL)",
+            name="ck_meinchat_message_one_parent",
+        ),
     )
 
     conversation_id = db.Column(
         db.UUID(as_uuid=True),
         db.ForeignKey("meinchat_conversation.id", ondelete="CASCADE"),
-        nullable=False,
+        nullable=True,
+    )
+    # S86.1 D2 — set when the message belongs to a room instead of a 1:1
+    # conversation. The room send path lands in Slice 1b; here it is the
+    # schema + serialisation only.
+    room_id = db.Column(
+        db.UUID(as_uuid=True),
+        db.ForeignKey("meinchat_room.id", ondelete="CASCADE"),
+        nullable=True,
+        index=True,
     )
     sender_id = db.Column(
         db.UUID(as_uuid=True),
@@ -81,7 +96,9 @@ class Message(BaseModel):
     def to_dict(self) -> dict:
         result = {
             "id": str(self.id),
-            "conversation_id": str(self.conversation_id),
+            "conversation_id": (
+                str(self.conversation_id) if self.conversation_id else None
+            ),
             "sender_id": str(self.sender_id),
             "sender_nickname": self.sender_nickname,
             "body": self.body,
@@ -96,6 +113,8 @@ class Message(BaseModel):
             # S28.4 — attachment blobs (fullres/thumb), empty for none.
             "attachments": [a.to_dict() for a in self.attachments],
         }
+        if self.room_id is not None:
+            result["room_id"] = str(self.room_id)
         if self.envelope is not None:
             result["envelope"] = base64.b64encode(self.envelope).decode("ascii")
         return result

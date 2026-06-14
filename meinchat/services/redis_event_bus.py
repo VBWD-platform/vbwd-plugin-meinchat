@@ -16,7 +16,7 @@ import json
 import logging
 import threading
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Sequence
 
 from plugins.meinchat.meinchat.services.event_bus_base import Subscription
 
@@ -54,13 +54,26 @@ class RedisEventBus:
         channel: str,
         heartbeat_seconds: Optional[float] = None,
     ) -> Subscription:
+        return self.subscribe_many([channel], heartbeat_seconds=heartbeat_seconds)
+
+    def subscribe_many(
+        self,
+        channels: Sequence[str],
+        heartbeat_seconds: Optional[float] = None,
+    ) -> Subscription:
+        """Register ONE subscription under several channels (S86.1 D5). The
+        single per-worker listener already psubscribes the whole prefix
+        pattern, so no extra Redis connection is opened per added channel."""
+        unique_channels = list(dict.fromkeys(channels))
         sub = Subscription(
-            channel,
+            unique_channels[0] if unique_channels else "",
             heartbeat_seconds=heartbeat_seconds,
             on_close=self._unsubscribe,
+            channels=unique_channels,
         )
         with self._lock:
-            self._subs.setdefault(channel, []).append(sub)
+            for channel in unique_channels:
+                self._subs.setdefault(channel, []).append(sub)
         self._ensure_listener()
         return sub
 
@@ -86,15 +99,16 @@ class RedisEventBus:
     # ── Internals ───────────────────────────────────────────────────────────
     def _unsubscribe(self, sub: Subscription) -> None:
         with self._lock:
-            bucket = self._subs.get(sub.channel)
-            if bucket is None:
-                return
-            try:
-                bucket.remove(sub)
-            except ValueError:
-                return
-            if not bucket:
-                del self._subs[sub.channel]
+            for channel in sub.channels:
+                bucket = self._subs.get(channel)
+                if bucket is None:
+                    continue
+                try:
+                    bucket.remove(sub)
+                except ValueError:
+                    continue
+                if not bucket:
+                    del self._subs[channel]
 
     def _ensure_listener(self) -> None:
         with self._listener_lock:

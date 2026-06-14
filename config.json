@@ -148,5 +148,25 @@
     "type": "integer",
     "default": 3600,
     "description": "iOS override: rolling window length in seconds for attachment_send."
+  },
+
+  "guest_economy_enabled": {
+    "type": "boolean",
+    "default": true,
+    "description": "S86.3 D11 (word-based): when on, a public bot-widget guest is granted initial tokens on activation and spends them per word (questions AND bot answers, 1 token = 1 word). When off, no grant and no metering (guest chats are free)."
+  },
+  "guest_initial_tokens": {
+    "type": "integer",
+    "default": 20,
+    "min": 0,
+    "max": 1000000,
+    "description": "S86.3 D11: tokens credited to a freshly provisioned widget guest on activation. Granted only to a NEW guest — a returning guest reusing its session is not re-granted."
+  },
+  "guest_token_cost_per_word": {
+    "type": "integer",
+    "default": 1,
+    "min": 0,
+    "max": 1000000,
+    "description": "S86.3 D11 (REVISED, word-based billing): tokens charged per word. Both the guest's question words and the bot's answer words are debited from the guest (1 token = 1 word by default). 0 disables per-word charging."
   }
 }

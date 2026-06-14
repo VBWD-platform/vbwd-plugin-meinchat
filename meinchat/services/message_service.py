@@ -4,6 +4,8 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 from uuid import UUID
 
+from vbwd.services import push_dispatcher_registry
+
 from plugins.meinchat.meinchat.extensibility import registry
 from plugins.meinchat.meinchat.extensibility.identity import (
     IDeviceDirectory,
@@ -37,6 +39,14 @@ class ConversationNotFoundError(Exception):
 
 class NotAConversationMemberError(Exception):
     """Caller is not one of the conversation's two participants."""
+
+
+class RoomNotFoundError(Exception):
+    """No room with the given id (S86.1 room message path)."""
+
+
+class NotARoomMemberError(Exception):
+    """Caller is not a member of the room (S86.1 room message path)."""
 
 
 class MessageNotFoundError(Exception):
@@ -194,6 +204,8 @@ class MessageService:
         attachment_service: Optional[AttachmentService] = None,
         event_bus: Optional[Any] = None,
         attachment_repo: Optional[Any] = None,
+        room_repo: Optional[Any] = None,
+        member_repo: Optional[Any] = None,
     ) -> None:
         self._conv_repo = conv_repo
         self._message_repo = message_repo
@@ -201,6 +213,11 @@ class MessageService:
         self._attachments = attachment_service
         self._event_bus = event_bus
         self._attachment_repo = attachment_repo
+        # S86.1 D2 — the room message path reuses this single message pipeline;
+        # the room/member repos are only needed when a room route is hit, so
+        # they stay optional (the 1:1 callers don't supply them).
+        self._room_repo = room_repo
+        self._member_repo = member_repo
 
     def _publish(self, user_id, event_type: str, payload: Dict[str, Any]) -> None:
         if self._event_bus is None:
@@ -240,12 +257,33 @@ class MessageService:
         )
         return tuple(device.id.bytes for device in devices)
 
-    def _run_post_send_hooks(self, row: Message) -> None:
+    def _run_post_send_hooks(
+        self,
+        row: Message,
+        *,
+        conversation: Optional[Any] = None,
+        recipient_user_id: Optional[UUID] = None,
+    ) -> None:
         for hook in registry.resolve_all(IPostSendHook):
             try:
                 hook.on_sent(row)
             except Exception as exc:  # a hook must never fail the send
                 logger.error("post-send hook %s failed: %s", hook, exc)
+        # S66 — emit a generic PushEvent through the core dispatcher registry.
+        # No direct APNs import here: the registered push hook owns transport
+        # + payload, and the registry logs/swallows handler errors so a push
+        # can never fail the send. With nothing registered this is a no-op.
+        if conversation is None or recipient_user_id is None:
+            return
+        push_dispatcher_registry.dispatch(
+            push_dispatcher_registry.PushEvent(
+                message=row,
+                conversation=conversation,
+                recipient_user_id=recipient_user_id,
+                app="meinchat",
+            ),
+            logger=logger,
+        )
 
     # ── send ───────────────────────────────────────────────────────────────
 
@@ -317,7 +355,7 @@ class MessageService:
         message_dict = msg.to_dict()
         self._publish(peer_id, "message", {"message": message_dict})
         self._publish(sender_user_id, "message", {"message": message_dict})
-        self._run_post_send_hooks(msg)
+        self._run_post_send_hooks(msg, conversation=conv, recipient_user_id=peer_id)
         return msg
 
     # ── read ──────────────────────────────────────────────────────────────
@@ -334,7 +372,13 @@ class MessageService:
         del conv  # unused after the authz check
         return self._message_repo.page(conversation_id, before=before, limit=limit)
 
-    def mark_read(self, conversation_id: UUID, *, reader_user_id: UUID) -> None:
+    def mark_read(
+        self,
+        conversation_id: UUID,
+        *,
+        reader_user_id: UUID,
+        originating_device_token: Optional[str] = None,
+    ) -> None:
         conv = self._require_member(conversation_id, reader_user_id)
         ConversationService.clear_unread_for(reader_user_id, conv)
         self._conv_repo.save(conv)
@@ -346,6 +390,174 @@ class MessageService:
         }
         self._publish(peer_id, "read", payload)
         self._publish(reader_user_id, "read", payload)
+        self._dispatch_badge_only(
+            conv, reader_user_id, originating_device_token=originating_device_token
+        )
+
+    def _dispatch_badge_only(
+        self,
+        conversation: Any,
+        reader_user_id: UUID,
+        *,
+        originating_device_token: Optional[str],
+    ) -> None:
+        """S68 — after a read, push a silent badge update to the reader's OTHER
+        iOS devices (the recipient is the reader themself). The registered push
+        hook owns transport + payload; the registry logs/swallows handler errors
+        so a push can never fail a read. With nothing registered this is a
+        no-op."""
+        push_dispatcher_registry.dispatch(
+            push_dispatcher_registry.PushEvent(
+                message=None,
+                conversation=conversation,
+                recipient_user_id=reader_user_id,
+                app="meinchat",
+                kind="badge_only",
+                originating_device_token=originating_device_token,
+            ),
+            logger=logger,
+        )
+
+    # ── room message path (S86.1 D2) ────────────────────────────────────────
+
+    def _room_expected_device_ids(self, members) -> tuple:
+        """Addressed device set for an e2e room send: every CURRENT member's
+        active devices (the N-party generalisation of the 1:1 peer+sender set).
+        Each id is the 16-byte UUID form the client packs into the envelope's
+        per-recipient slots, so the codec rejects envelopes addressed to a
+        device that is not a current member's. Empty for the Null directory
+        (meinchat-alone) — plain sends ignore it (backward-compatible)."""
+        directory = self._device_directory()
+        device_ids: list = []
+        for member in members:
+            for device in directory.lookup_active(member.user_id):
+                device_ids.append(device.id.bytes)
+        return tuple(device_ids)
+
+    def send_room_text(
+        self,
+        room_id: UUID,
+        *,
+        sender_user_id: UUID,
+        body: Any,
+        protocol_hint: str = "plain",
+        meta: Optional[Dict[str, Any]] = None,
+    ) -> Message:
+        """Send a message into a room. Mirrors `send_text` (same
+        `meinchat_message` row, same `meta` validation, same body codec) with
+        the room as the parent and the unread fan-out spread across every OTHER
+        member. For an `e2e_v1` room the client posts an opaque envelope that
+        the registered codec validates against EVERY current member-device
+        (per-recipient fan-out — the server holds no keys)."""
+        if meta is not None:
+            _validate_meta(meta)
+        room, members = self._require_room_member(room_id, sender_user_id)
+
+        if protocol_hint == "plain":
+            body_clean = (body or "").strip()
+            if not body_clean:
+                raise ValueError("body must be non-empty")
+            if len(body_clean) > _BODY_MAX:
+                raise MessageBodyTooLongError(f"body exceeds {_BODY_MAX} characters")
+        else:
+            body_clean = ""
+
+        sender_nick = self._nickname_repo.find_by_user_id(sender_user_id)
+        sender_nickname = sender_nick.nickname if sender_nick is not None else ""
+
+        ctx = SendContext(
+            sender=sender_user_id,
+            recipients=[member.user_id for member in members],
+            conversation=room,
+            body_or_envelope=body_clean if protocol_hint == "plain" else body,
+            protocol_hint=protocol_hint,
+            expected_device_ids=(
+                ()
+                if protocol_hint == "plain"
+                else self._room_expected_device_ids(members)
+            ),
+        )
+        encoded = self._body_codec().encode(ctx)
+
+        now = datetime.now(timezone.utc)
+        msg = Message()
+        msg.room_id = room_id
+        msg.conversation_id = None
+        msg.sender_id = sender_user_id
+        msg.sender_nickname = sender_nickname
+        msg.protocol = encoded.protocol
+        msg.body = encoded.body
+        msg.envelope = encoded.envelope
+        msg.meta = meta
+        msg.sent_at = now
+        self._message_repo.save(msg)
+
+        for member in members:
+            if member.user_id != sender_user_id:
+                member.unread_count += 1
+                self._member_repo.save(member)
+        room.last_message_at = now
+        room.last_message_preview = (
+            body_clean[:120] if encoded.body is not None else "[encrypted]"
+        )
+        self._room_repo.save(room)
+
+        message_dict = msg.to_dict()
+        self._publish_room(room_id, "message", {"message": message_dict})
+        # S86.3 D6 — fire the SAME post-send hook chain the 1:1 send fires, so
+        # the bot inbound bridge is invoked for room messages too. The push
+        # dispatch (conversation/recipient args) is 1:1-only and not reused here.
+        self._run_post_send_hooks(msg)
+        return msg
+
+    def list_room_messages(
+        self,
+        room_id: UUID,
+        *,
+        caller_user_id: UUID,
+        before: Optional[UUID] = None,
+        limit: int = 50,
+    ) -> List[Message]:
+        """Membership-gated, cursor-paginated room timeline (mirrors
+        `list_messages`)."""
+        self._require_room_member(room_id, caller_user_id)
+        return self._message_repo.page_room(room_id, before=before, limit=limit)
+
+    def mark_room_read(self, room_id: UUID, *, reader_user_id: UUID) -> None:
+        """Clear the caller's room unread count and stamp `last_read_at`
+        (mirrors `mark_conversation_read`)."""
+        _room, members = self._require_room_member(room_id, reader_user_id)
+        now = datetime.now(timezone.utc)
+        for member in members:
+            if member.user_id == reader_user_id:
+                member.unread_count = 0
+                member.last_read_at = now
+                self._member_repo.save(member)
+        payload = {"room_id": str(room_id), "reader_id": str(reader_user_id)}
+        self._publish_room(room_id, "read", payload)
+
+    def _require_room_member(self, room_id: UUID, user_id: UUID):
+        """Return (room, members) when `user_id` is a member; raise otherwise."""
+        if self._room_repo is None or self._member_repo is None:
+            raise RuntimeError("room/member repository not injected")
+        room = self._room_repo.find_by_id(room_id)
+        if room is None:
+            raise RoomNotFoundError(f"room {room_id} not found")
+        members = self._member_repo.list_for_room(room_id)
+        if not any(member.user_id == user_id for member in members):
+            raise NotARoomMemberError(
+                f"user {user_id} is not a member of room {room_id}"
+            )
+        return room, members
+
+    def _publish_room(
+        self, room_id: UUID, event_type: str, payload: Dict[str, Any]
+    ) -> None:
+        """Publish a room event on the `room:<id>` channel so the SSE stream
+        fans it to every current member (and only them)."""
+        if self._event_bus is None:
+            return
+        self._event_bus.publish(f"room:{room_id}", {"type": event_type, **payload})
 
     # ── send (attachment variant) ──────────────────────────────────────────
 

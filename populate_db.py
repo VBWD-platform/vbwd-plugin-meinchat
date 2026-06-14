@@ -172,10 +172,69 @@ def main() -> int:
             print("  demo greeting already in conversation")
         db.session.commit()
 
+        print("── 6. demo bot-widget (cms, optional) ────────────────────")
+        _seed_demo_widget(db)
+
         print()
         print(f"  conversation id: {conv.id}")
         print("  done.")
         return 0
+
+
+# The shipped widget envelope is the SINGLE SOURCE of the demo bot-widget's
+# slug + config (DRY) — no hardcoded dict lives here anymore. The `assistant`
+# BOT is provisioned by bot_meinchat's populate_db.py — run that first so the
+# member resolves; widget-start still 404s gracefully if the bot is absent.
+_WIDGET_JSON_RELATIVE_PATH = "docs/import/cms/widgets/meinchat-bot-widget.json"
+_CMS_WIDGETS_ENTITY_KEY = "cms_widgets"
+
+
+def _seed_demo_widget(db) -> None:
+    """Idempotently seed the public MeinchatChatWidget by importing the shipped
+    JSON envelope through the unified ``cms_widgets`` data-exchange mechanism
+    (the JSON is the single source of truth — same path as
+    ``flask data-exchange import cms_widgets <file>``).
+
+    cms is a SOFT dependency: if the ``cms_widgets`` exchanger is not registered
+    (cms absent/disabled) or the cms import code is unavailable, skip cleanly —
+    meinchat only soft-depends on cms (S86.3 D2)."""
+    import json
+    from pathlib import Path
+
+    from vbwd.services.data_exchange.registry import data_exchange_registry
+
+    exchanger = data_exchange_registry.get(_CMS_WIDGETS_ENTITY_KEY)
+    if exchanger is None:
+        print("  cms not present — skipping demo widget")
+        return
+
+    try:
+        from vbwd.services.data_exchange.envelope import validate_envelope
+        from vbwd.services.data_exchange.port import MODE_UPSERT
+    except ImportError:
+        print("  cms not present — skipping demo widget")
+        return
+
+    widget_json_path = Path(__file__).resolve().parent / _WIDGET_JSON_RELATIVE_PATH
+    with open(widget_json_path, encoding="utf-8") as handle:
+        payload = json.load(handle)
+
+    # Fail fast on a malformed envelope (same guard the CLI applies); returns
+    # the rows so we can name the seeded slug in the log without re-hardcoding it.
+    rows = validate_envelope(payload, _CMS_WIDGETS_ENTITY_KEY)
+
+    try:
+        result = exchanger.import_(payload, mode=MODE_UPSERT, dry_run=False)
+    except ImportError:
+        print("  cms not present — skipping demo widget")
+        return
+
+    db.session.commit()
+    slug = rows[0]["slug"] if rows else _CMS_WIDGETS_ENTITY_KEY
+    print(
+        f"  seeded public widget '{slug}' via cms_widgets import "
+        f"(created={result.created}, updated={result.updated})"
+    )
 
 
 if __name__ == "__main__":

@@ -115,3 +115,30 @@ class TestEventBusContract:
         events = list(sub.iter_events(timeout=0.2))
         assert time.time() - start < 1.5
         assert all(e.get("type") == "heartbeat" for e in events)
+
+
+class TestSubscribeMany:
+    """S86.1 D5 — one stream fans events from several channels (a user's own
+    channel plus each of their rooms) into ONE subscription, reusing the same
+    queue/iter_events machinery (no second stream)."""
+
+    def test_single_subscription_receives_from_every_channel(self, bus):
+        sub = bus.subscribe_many(["user:m1", "room:r1", "room:r2"])
+        _publish(bus, "room:r1", {"src": "r1"})
+        _publish(bus, "user:m1", {"src": "u"})
+        received = {event["src"] for event in _collect(sub, 2, 2.0)}
+        assert received == {"r1", "u"}
+
+    def test_does_not_receive_unsubscribed_channels(self, bus):
+        sub = bus.subscribe_many(["user:m2", "room:rA"])
+        _publish(bus, "room:rZ", {"src": "rZ"})
+        assert _collect(sub, 1, 0.3) == []
+
+    def test_close_unsubscribes_from_all_channels(self, bus):
+        sub = bus.subscribe_many(["user:m3", "room:rB"])
+        if hasattr(bus, "wait_listening"):
+            assert bus.wait_listening(timeout=2.0)
+        sub.close()
+        assert bus.channel_count() == 0
+        bus.publish("room:rB", {"src": "rB"})
+        assert _collect(sub, 1, 0.3) == []

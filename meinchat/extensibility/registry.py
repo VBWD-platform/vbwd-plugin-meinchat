@@ -71,3 +71,22 @@ def reset_for_tests(port_cls: Optional[type] = None) -> None:
             _registry.clear()
         else:
             _registry.pop(port_cls, None)
+
+
+def snapshot_for_tests() -> Dict[type, List[object]]:
+    """Test helper — a shallow copy of the current registry state.
+
+    Pair with `restore_for_tests` to run a test that calls `on_enable`
+    (which mutates this global registry) without leaking its registrations
+    into later tests."""
+    with _lock:
+        return {port_cls: list(impls) for port_cls, impls in _registry.items()}
+
+
+def restore_for_tests(snapshot: Dict[type, List[object]]) -> None:
+    """Test helper — replace the registry with a `snapshot_for_tests` value."""
+    with _lock:
+        _registry.clear()
+        _registry.update(
+            {port_cls: list(impls) for port_cls, impls in snapshot.items()}
+        )

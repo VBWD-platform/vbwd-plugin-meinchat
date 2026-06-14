@@ -9,6 +9,24 @@ their documented defaults.
 from typing import Dict
 from unittest.mock import MagicMock, patch
 
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def _restore_meinchat_registry():
+    """`on_enable()` registers extension impls (incl. the D11 charge
+    ``IPostSendHook``) into the shared in-process registry. These unit tests
+    call `on_enable()` directly; without restoration their registrations leak
+    into later (esp. integration) tests — a stale DUPLICATE charge hook then
+    silently double-debits guest tokens. Snapshot the registry and restore it
+    afterwards so this file's `on_enable` calls leave it exactly as the
+    session app set it up (rather than wiping the session's own impls)."""
+    from plugins.meinchat.meinchat.extensibility import registry
+
+    snapshot = registry.snapshot_for_tests()
+    yield
+    registry.restore_for_tests(snapshot)
+
 
 _EXPECTED_RETENTION_DEFAULTS: Dict[str, int] = {
     "messages_retention_days_server": 2,
@@ -59,3 +77,61 @@ class TestSchedulerTestingGuard:
     def test_scheduler_registered_when_not_testing(self):
         start_mock = self._enable_plugin(testing_flag=False)
         start_mock.assert_called_once()
+
+
+class TestCmsWidgetReaderRegistration:
+    """S86.3 D2 — cms is a SOFT dependency: meinchat enables + resolves a widget
+    reader whether or not cms is importable. With cms ABSENT only the null
+    reader is registered (widget-start 404s); meinchat never hard-depends."""
+
+    def _enable(self):
+        from plugins.meinchat import MeinchatPlugin
+
+        plugin = MeinchatPlugin()
+        plugin.initialize()
+        fake_app = MagicMock()
+        fake_app.config = {"TESTING": True}
+        fake_app.container = None
+        with patch("plugins.meinchat.current_app", fake_app):
+            plugin.on_enable()
+
+    def test_cms_absent_leaves_only_null_reader(self):
+        from plugins.meinchat.meinchat.extensibility import registry
+        from plugins.meinchat.meinchat.extensibility.cms_widget_reader import (
+            ICmsWidgetReader,
+            NullCmsWidgetReader,
+        )
+
+        registry.reset_for_tests(ICmsWidgetReader)
+        # Simulate cms being absent: the guarded `import plugins.cms` raises.
+        real_import = __import__
+
+        def _fail_cms(name, *args, **kwargs):
+            if name == "plugins.cms" or name.startswith("plugins.cms."):
+                raise ImportError("cms not installed")
+            return real_import(name, *args, **kwargs)
+
+        try:
+            with patch("builtins.__import__", side_effect=_fail_cms):
+                self._enable()
+            reader = registry.resolve_first(ICmsWidgetReader)
+            assert isinstance(reader, NullCmsWidgetReader)
+            assert reader.get_active_widget_config("any") is None
+        finally:
+            registry.reset_for_tests(ICmsWidgetReader)
+
+    def test_cms_present_registers_cms_backed_reader_last(self):
+        from plugins.meinchat.meinchat.extensibility import registry
+        from plugins.meinchat.meinchat.extensibility.cms_widget_reader import (
+            CmsWidgetReader,
+            ICmsWidgetReader,
+        )
+
+        registry.reset_for_tests(ICmsWidgetReader)
+        try:
+            self._enable()
+            # cms is importable in the monorepo → the cms-backed adapter wins.
+            reader = registry.resolve_first(ICmsWidgetReader)
+            assert isinstance(reader, CmsWidgetReader)
+        finally:
+            registry.reset_for_tests(ICmsWidgetReader)

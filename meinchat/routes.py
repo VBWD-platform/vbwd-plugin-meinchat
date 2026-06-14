@@ -6,6 +6,8 @@ actually exempts every endpoint below.
 """
 import base64
 import json
+import logging
+import os
 from typing import Any
 
 from flask import (
@@ -19,10 +21,14 @@ from flask import (
 )
 
 from vbwd.extensions import db
+from vbwd.models.enums import TokenTransactionType, UserRole
 from vbwd.middleware.auth import require_admin, require_auth, require_permission
 from vbwd.plugins.payment_route_helpers import check_plugin_enabled
+from vbwd.repositories.user_repository import UserRepository
 
 from vbwd.interfaces.file_storage import ManagerBackedFileStorage
+
+from plugins.meinchat import DEFAULT_CONFIG
 
 from plugins.meinchat.meinchat.repositories.contact_repository import (
     ContactRepository,
@@ -41,6 +47,12 @@ from plugins.meinchat.meinchat.repositories.token_transfer_repository import (
 )
 from plugins.meinchat.meinchat.repositories.nickname_repository import (
     NicknameRepository,
+)
+from plugins.meinchat.meinchat.repositories.room_repository import (
+    RoomRepository,
+)
+from plugins.meinchat.meinchat.repositories.room_member_repository import (
+    RoomMemberRepository,
 )
 from plugins.meinchat.meinchat.services.attachment_service import (
     AttachmentService,
@@ -64,7 +76,19 @@ from plugins.meinchat.meinchat.services.message_service import (
     MessageNotFoundError,
     MessageService,
     NotAConversationMemberError,
+    NotARoomMemberError,
     PlainAttachmentError,
+    RoomNotFoundError,
+)
+from plugins.meinchat.meinchat.services.room_protocol import (
+    PROTOCOL_PREFERENCE,
+    RoomProtocolSelector,
+)
+from plugins.meinchat.meinchat.services.room_service import (
+    NotARoomMemberError as RoomServiceNotMemberError,
+    RoomNotFoundError as RoomServiceNotFoundError,
+    RoomPermissionError,
+    RoomService,
 )
 from plugins.meinchat.meinchat.services.nickname_service import (
     NicknameBannedError,
@@ -77,13 +101,38 @@ from plugins.meinchat.meinchat.services.token_transfer_service import (
     SelfTransferError,
     TokenTransferService,
 )
+from plugins.meinchat.meinchat.services.guest_session_service import (
+    GuestSessionService,
+)
+from plugins.meinchat.meinchat.services.widget_start_service import (
+    DisplayNameRequiredError,
+    NicknameRequiredError,
+    PublicHumanMemberError,
+    UnknownMemberError,
+    WidgetAuthRequiredError,
+    WidgetNotFoundError,
+    WidgetStartService,
+)
+from plugins.meinchat.meinchat.services.widget_room_meter import (
+    InsufficientGuestTokensError,
+    WidgetRoomMeter,
+)
+from plugins.meinchat.meinchat.repositories.guest_session_repository import (
+    GuestSessionRepository,
+)
 from plugins.meinchat.meinchat.extensibility import registry
+from plugins.meinchat.meinchat.extensibility.cms_widget_reader import (
+    ICmsWidgetReader,
+    NullCmsWidgetReader,
+)
+from plugins.meinchat.meinchat.extensibility.errors import RoomPolicyError
 from plugins.meinchat.meinchat.extensibility.identity import (
     IDeviceDirectory,
     NullDeviceDirectory,
 )
 from plugins.meinchat.meinchat.extensibility.lifecycle import (
     IConversationCapabilities,
+    IRoomPolicy,
 )
 from plugins.meinchat.meinchat.extensibility.pipeline import IPostSendHook
 from plugins.meinchat.meinchat.services.event_bus_factory import create_event_bus
@@ -133,6 +182,31 @@ def _meinchat_config() -> dict:
     if config_store is None:
         return {}
     return config_store.get_config("meinchat") or {}
+
+
+# The three guest token-economy knobs (D11). The persisted store holds only the
+# admin's OVERRIDES (empty on a fresh install), so the economy reads must fall
+# back to the plugin's DEFAULT_CONFIG — otherwise a fresh guest is granted 0
+# tokens and the first send 402-gates the widget shut. DRY: the defaults come
+# from DEFAULT_CONFIG, never hardcoded here.
+_ECONOMY_CONFIG_KEYS = (
+    "guest_economy_enabled",
+    "guest_initial_tokens",
+    "guest_token_cost_per_word",
+)
+
+
+def _economy_config() -> dict:
+    """Resolve the guest token-economy knobs: persisted overrides applied over
+    the plugin's DEFAULT_CONFIG values. A persisted override wins; an absent key
+    falls back to its designed default. Narrow on purpose — only the economy
+    keys are defaulted here, leaving retention / rate-limit reads untouched."""
+    persisted = _meinchat_config()
+    resolved = {key: DEFAULT_CONFIG[key] for key in _ECONOMY_CONFIG_KEYS}
+    for key in _ECONOMY_CONFIG_KEYS:
+        if key in persisted:
+            resolved[key] = persisted[key]
+    return resolved
 
 
 def _attachment_service() -> AttachmentService:
@@ -279,7 +353,9 @@ def _mark_e2e_delivered(messages, *, caller_user_id, device_id: str) -> None:
 
 
 # Most-secure-first; negotiation picks the first mutually supported entry.
-_PROTOCOL_PREFERENCE = ["e2e_v1", "plain"]
+# Single source of truth shared with the room protocol selector (DRY): the 1:1
+# negotiation and room selection rank protocols identically.
+_PROTOCOL_PREFERENCE = PROTOCOL_PREFERENCE
 
 
 class _NegotiationError(Exception):
@@ -358,7 +434,279 @@ def _message_service() -> MessageService:
         attachment_service=_attachment_service(),
         event_bus=_event_bus(),
         attachment_repo=AttachmentRepository(db.session),
+        room_repo=RoomRepository(db.session),
+        member_repo=RoomMemberRepository(db.session),
     )
+
+
+def _resolve_user_role(user_id):
+    """Map a user id to its core ``UserRole`` for the room protocol selector.
+
+    Kept as a narrow lookup (not a core-user import in the service) so the room
+    selector depends only on a callable (D — dependency inversion). Returns
+    ``None`` for an unknown id."""
+    user = current_app.container.user_repository().find_by_id(user_id)
+    return user.role if user is not None else None
+
+
+def _room_service() -> RoomService:
+    """RoomService wired to the SAME protocol seams the 1:1 path uses: the
+    registered capability union (`_server_capabilities`) and the device
+    directory's per-user key predicate (`_device_directory().has_any`)."""
+    selector = RoomProtocolSelector(
+        server_capabilities_provider=_server_capabilities,
+        device_has_keys=lambda user_id: _device_directory().has_any(user_id),
+    )
+    return RoomService(
+        room_repo=RoomRepository(db.session),
+        member_repo=RoomMemberRepository(db.session),
+        protocol_selector=selector,
+        role_resolver=_resolve_user_role,
+    )
+
+
+def _enforce_room_policies(creator_id, member_ids, accepted_protocols):
+    """Run every registered `IRoomPolicy` against the prospective room. Returns
+    a 409 JSON response on the first veto (e.g. an e2e-required room with a
+    keyless member), or ``None`` when all policies allow.
+
+    This is the room generalisation of the 1:1 `_negotiate_protocol` veto: the
+    selector still pins `plain` when plain is an acceptable fallback, but an
+    *e2e-required* room is vetoed instead of silently downgraded."""
+    all_member_ids = [creator_id, *[uid for uid in member_ids if uid != creator_id]]
+    member_roles = {uid: _resolve_user_role(uid) for uid in all_member_ids}
+    nickname_repo = NicknameRepository(db.session)
+
+    def nickname_of(user_id):
+        row = nickname_repo.find_by_user_id(user_id)
+        return row.nickname if row is not None else None
+
+    for policy in registry.resolve_all(IRoomPolicy):
+        try:
+            policy.may_start_room(
+                all_member_ids,
+                member_roles,
+                accepted_protocols,
+                nickname_of=nickname_of,
+            )
+        except RoomPolicyError as exc:
+            return (
+                jsonify({"error": exc.hint, "code": exc.code, "hint": exc.hint}),
+                409,
+            )
+    return None
+
+
+def _widget_reader() -> ICmsWidgetReader:
+    """The registered cms widget reader, falling back to the null reader so
+    widget-start answers a clean 404 when cms is absent (D2, Liskov)."""
+    try:
+        return registry.resolve_first(ICmsWidgetReader)
+    except LookupError:
+        return NullCmsWidgetReader()
+
+
+def _guest_session_service() -> GuestSessionService:
+    cfg = _meinchat_config()
+    return GuestSessionService(
+        user_service=current_app.container.user_service(),
+        nickname_service=_nickname_service(),
+        auth_service=current_app.container.auth_service(),
+        session=db.session,
+        token_ttl_hours=float(cfg.get("widget_guest_token_ttl_hours", 24)),
+    )
+
+
+def _widget_start_service() -> WidgetStartService:
+    """Wire WidgetStartService to the same nickname/role seams the room routes
+    use. Member resolution mirrors `start_conversation` (unknown / banned /
+    search-hidden → unknown member)."""
+    nickname_repo = NicknameRepository(db.session)
+
+    def resolve_nickname_to_user_id(nickname):
+        if not isinstance(nickname, str) or not nickname.strip():
+            return None
+        row = nickname_repo.find_by_nickname_ci(nickname.strip())
+        if row is None or row.banned or row.search_hidden:
+            return None
+        return row.user_id
+
+    def resolve_user_nickname(user_id):
+        row = nickname_repo.find_by_user_id(user_id)
+        return row.nickname if row is not None else None
+
+    cfg = _meinchat_config()
+    economy = _economy_config()
+    economy_enabled = bool(economy["guest_economy_enabled"])
+    initial_tokens = int(economy["guest_initial_tokens"])
+
+    def grant_initial_tokens(guest_user_id):
+        # D11 — credit the guest's initial budget through the CORE TokenService
+        # (the single source of truth for balances); meinchat owns no ledger.
+        current_app.container.token_service().credit_tokens(
+            guest_user_id,
+            initial_tokens,
+            TokenTransactionType.BONUS,
+            description="meinchat widget guest initial grant",
+        )
+
+    guest_token_ttl_hours = float(cfg.get("widget_guest_token_ttl_hours", 24))
+
+    def mint_guest_access_token(guest_user_id):
+        # D12 — re-mint a short-TTL access token for a RETURNING guest so the FE
+        # keeps driving the guest's room as the guest. Mints a token only (no
+        # tokens granted), reusing the single core mint path (DRY). Returns None
+        # if the guest can no longer be resolved → FE self-heals with a fresh
+        # start.
+        user = UserRepository(db.session).find_by_id(guest_user_id)
+        if user is None:
+            return None
+        return current_app.container.auth_service().generate_access_token(
+            guest_user_id,
+            user.email,
+            expiration_hours=guest_token_ttl_hours,
+        )
+
+    return WidgetStartService(
+        widget_reader=_widget_reader(),
+        resolve_nickname_to_user_id=resolve_nickname_to_user_id,
+        resolve_user_role=_resolve_user_role,
+        resolve_user_nickname=resolve_user_nickname,
+        room_service=_room_service(),
+        guest_session_service=_guest_session_service(),
+        guest_session_repo=GuestSessionRepository(db.session),
+        guest_session_ttl_hours=guest_token_ttl_hours,
+        grant_initial_tokens=grant_initial_tokens,
+        guest_initial_tokens=initial_tokens,
+        economy_enabled=economy_enabled,
+        mint_guest_access_token=mint_guest_access_token,
+    )
+
+
+def _widget_room_meter() -> WidgetRoomMeter:
+    """The pre-send balance gate for guest sends in widget rooms (D11). Resolves
+    balances through the core TokenService (no meinchat-owned ledger). The
+    per-word charge itself lives in the registered ``WidgetRoomChargeHook``."""
+    return WidgetRoomMeter(
+        token_service=current_app.container.token_service(),
+        resolve_user_role=_resolve_user_role,
+        economy_enabled=bool(_economy_config()["guest_economy_enabled"]),
+    )
+
+
+def _is_metered_guest_send(room, sender_user_id) -> bool:
+    """True when this room send should surface the guest's post-charge balance:
+    economy on, a widget room, sender is the room's GUEST member (D11)."""
+    if not bool(_economy_config()["guest_economy_enabled"]):
+        return False
+    if room is None or not getattr(room, "widget_slug", None):
+        return False
+    return _resolve_user_role(sender_user_id) == UserRole.GUEST
+
+
+def _guest_token_balance(user_id) -> int:
+    """The guest's remaining token balance for the FE to render the buy block."""
+    return current_app.container.token_service().get_balance(user_id)
+
+
+def _resolve_optional_caller_id():
+    """Return the caller's user id from a valid bearer token, or None.
+
+    The widget-start endpoint is NOT `@require_auth` (a public widget allows an
+    anonymous visitor). For a `logged_in` widget we still need the caller, so we
+    verify the bearer the same way `require_auth` does — without rejecting when
+    it is absent."""
+    auth_header = request.headers.get("Authorization") or ""
+    parts = auth_header.split()
+    if len(parts) != 2 or parts[0].lower() != "bearer":
+        return None
+    from vbwd.services.auth_service import AuthService
+
+    user_repo = UserRepository(db.session)
+    user_id = AuthService(user_repository=user_repo).verify_token(parts[1])
+    if user_id is None:
+        return None
+    user = user_repo.find_by_id(user_id)
+    if user is None or user.status.value != "ACTIVE":
+        return None
+    return user_id
+
+
+def _enforce_widget_guest_start_rate():
+    """IP-keyed rate guard for the anonymous public widget-start path. Returns a
+    429 response when over quota, else None."""
+    platform = (request.headers.get("X-Client-Platform") or "web").lower()
+    per_window, window_seconds = RateLimitPolicy(_meinchat_config()).limits_for(
+        "widget_guest_start", platform
+    )
+    client_ip = request.remote_addr or "unknown"
+    try:
+        _rate_limiter().check(
+            "widget_guest_start",
+            user_id=f"ip:{client_ip}",
+            limit=per_window,
+            window_seconds=window_seconds,
+        )
+    except RateLimitExceeded as exc:
+        current_app.logger.warning(
+            "429 category=widget_guest_start client_ip=%s retry_after_seconds=%d",
+            client_ip,
+            exc.retry_after_seconds,
+        )
+        response = jsonify({"error": str(exc)})
+        response.status_code = 429
+        response.headers["Retry-After"] = str(exc.retry_after_seconds)
+        response.headers["X-Rate-Limit-Category"] = "widget_guest_start"
+        return response
+    return None
+
+
+_FINGERPRINT_LOGGER_NAME = "meinchat.widget_guest_fingerprint"
+_FINGERPRINT_LOG_FILENAME = "widget_guest_fingerprint.log"
+
+
+def _fingerprint_logger() -> logging.Logger:
+    """A dedicated module logger with a file handler for the D12 fingerprint
+    candidate log. Configured once per process; the file lives under the app's
+    var/log dir (``VBWD_LOG_DIR``), falling back to ``var/log`` under the cwd.
+    Log-only — never a DB row, never enforcement."""
+    logger = logging.getLogger(_FINGERPRINT_LOGGER_NAME)
+    if getattr(logger, "_meinchat_fingerprint_configured", False):
+        return logger
+    log_dir = os.environ.get("VBWD_LOG_DIR") or os.path.join(os.getcwd(), "var", "log")
+    try:
+        os.makedirs(log_dir, exist_ok=True)
+        handler: logging.Handler = logging.FileHandler(
+            os.path.join(log_dir, _FINGERPRINT_LOG_FILENAME)
+        )
+    except OSError:
+        # A read-only/missing dir must never break widget-start; degrade to the
+        # app logger so the signals are still captured somewhere.
+        handler = logging.StreamHandler()
+    handler.setFormatter(logging.Formatter("%(asctime)s %(message)s"))
+    logger.addHandler(handler)
+    logger.setLevel(logging.INFO)
+    logger.propagate = False
+    logger._meinchat_fingerprint_configured = True  # type: ignore[attr-defined]
+    return logger
+
+
+def _log_widget_start_fingerprint(widget_slug: str) -> None:
+    """Append the server-visible candidate identification signals (D12).
+
+    Best-effort: a logging failure must never break the public start."""
+    try:
+        from vbwd.middleware.api_key_auth import _client_ip
+
+        _fingerprint_logger().info(
+            "widget_start slug=%s ip=%s ua=%r accept_language=%r",
+            widget_slug,
+            _client_ip(),
+            request.headers.get("User-Agent", ""),
+            request.headers.get("Accept-Language", ""),
+        )
+    except Exception:  # noqa: BLE001 — forensic log is never load-bearing
+        current_app.logger.debug("widget-start fingerprint log failed", exc_info=True)
 
 
 def _token_transfer_service() -> TokenTransferService:
@@ -393,6 +741,49 @@ def _serialize_conversation_for_user(conv, user_id) -> dict:
         # S28.3b — the pinned protocol lets the client route e2e_v1
         # conversations through the meinchat-plus crypto provider.
         "protocol": conv.protocol,
+    }
+
+
+def _member_unread(member) -> int:
+    return member.unread_count if member is not None else 0
+
+
+def _serialize_room_for_user(room, user_id, members=None) -> dict:
+    """Inbox/detail DTO for a room — mirrors `_serialize_conversation_for_user`.
+
+    Carries the room identity + pinned protocol/capabilities, the member roster
+    (id + role + nickname), and the CALLER's own unread/last-read fields."""
+    if members is None:
+        members = RoomMemberRepository(db.session).list_for_room(room.id)
+    nickname_repo = NicknameRepository(db.session)
+    caller_member = next((m for m in members if m.user_id == user_id), None)
+    member_dtos = []
+    for member in members:
+        nickname_row = nickname_repo.find_by_user_id(member.user_id)
+        member_dtos.append(
+            {
+                "user_id": str(member.user_id),
+                "role": member.role,
+                "nickname": nickname_row.nickname if nickname_row else None,
+            }
+        )
+    return {
+        "id": str(room.id),
+        "name": room.name,
+        "protocol": room.protocol,
+        "capabilities": room.capabilities or [],
+        "members": member_dtos,
+        "member_count": len(member_dtos),
+        "last_message_at": (
+            room.last_message_at.isoformat() if room.last_message_at else None
+        ),
+        "last_message_preview": room.last_message_preview,
+        "unread_count": _member_unread(caller_member),
+        "last_read_at": (
+            caller_member.last_read_at.isoformat()
+            if caller_member is not None and caller_member.last_read_at
+            else None
+        ),
     }
 
 
@@ -881,7 +1272,14 @@ def download_attachment(attachment_id: str):
 @require_auth
 def mark_conversation_read(conv_id: str):
     try:
-        _message_service().mark_read(conv_id, reader_user_id=g.user_id)
+        # S68 — the iOS client appends ?device_token=<hex> so the badge-only
+        # push fired by mark_read suppresses the device that just read. Web
+        # clients omit it (no APNs token) → no suppression (correct).
+        _message_service().mark_read(
+            conv_id,
+            reader_user_id=g.user_id,
+            originating_device_token=request.args.get("device_token"),
+        )
         db.session.commit()
         return "", 204
     except ConversationNotFoundError as exc:
@@ -905,6 +1303,381 @@ def delete_message(conv_id: str, msg_id: str):
     except MessageNotFoundError as exc:
         db.session.rollback()
         return jsonify({"error": str(exc)}), 404
+
+
+# ── /api/v1/messaging/rooms/* (S86.1 D5) ────────────────────────────────────
+
+
+def _resolve_nicknames_or_404(nicknames):
+    """Resolve each nickname to a user id, matching the 1:1 `start_conversation`
+    rule (unknown / banned / search-hidden → not found). Returns
+    (resolved_ids, error_response). On success `error_response` is None."""
+    nickname_repo = NicknameRepository(db.session)
+    resolved = []
+    for nickname in nicknames:
+        if not isinstance(nickname, str) or not nickname.strip():
+            return None, (jsonify({"error": "nickname is required"}), 400)
+        row = nickname_repo.find_by_nickname_ci(nickname.strip())
+        if row is None or row.banned or row.search_hidden:
+            return None, (jsonify({"error": f"'{nickname}' not found"}), 404)
+        resolved.append(row.user_id)
+    return resolved, None
+
+
+@meinchat_bp.route("/api/v1/messaging/rooms", methods=["POST"])
+@require_auth
+def create_room():
+    """Body: {member_nicknames: [...], name?, accepted_protocols?}. Creates a
+    room with the caller as admin and each resolved nickname as a member.
+    Reuses the `new_conversation` rate-limit quota (rooms are a conversation
+    variant — one abuse budget, no new knob)."""
+    data = request.get_json(silent=True) or {}
+    member_nicknames = data.get("member_nicknames")
+    if not isinstance(member_nicknames, list):
+        return jsonify({"error": "member_nicknames must be a list"}), 400
+
+    resolved_ids, error = _resolve_nicknames_or_404(member_nicknames)
+    if error is not None:
+        return error
+
+    accepted_protocols = data.get("accepted_protocols")
+    # Run the room-start policies BEFORE spending the rate-limit budget so a
+    # failed veto (e.g. an e2e-required room with a keyless member) doesn't
+    # burn the caller's quota — mirroring the 1:1 `_negotiate_protocol` order.
+    veto = _enforce_room_policies(g.user_id, resolved_ids, accepted_protocols)
+    if veto is not None:
+        return veto
+
+    blocked = _enforce_rate("new_conversation")
+    if blocked is not None:
+        return blocked
+
+    room = _room_service().create_room(
+        g.user_id,
+        resolved_ids,
+        name=data.get("name"),
+        accepted_protocols=accepted_protocols,
+    )
+    db.session.commit()
+    return jsonify(_serialize_room_for_user(room, g.user_id)), 201
+
+
+@meinchat_bp.route("/api/v1/messaging/rooms", methods=["GET"])
+@require_auth
+def list_rooms():
+    rooms = _room_service().list_for_user(g.user_id)
+    return (
+        jsonify({"items": [_serialize_room_for_user(r, g.user_id) for r in rooms]}),
+        200,
+    )
+
+
+@meinchat_bp.route("/api/v1/messaging/rooms/<room_id>", methods=["GET"])
+@require_auth
+def get_room(room_id: str):
+    try:
+        room = _room_service().get_for_member(room_id, g.user_id)
+    except RoomServiceNotFoundError as exc:
+        return jsonify({"error": str(exc)}), 404
+    except RoomServiceNotMemberError as exc:
+        return jsonify({"error": str(exc)}), 403
+    return jsonify(_serialize_room_for_user(room, g.user_id)), 200
+
+
+@meinchat_bp.route("/api/v1/messaging/rooms/<room_id>/members", methods=["GET"])
+@require_auth
+def list_room_members(room_id: str):
+    service = _room_service()
+    try:
+        service.get_for_member(room_id, g.user_id)
+    except RoomServiceNotFoundError as exc:
+        return jsonify({"error": str(exc)}), 404
+    except RoomServiceNotMemberError as exc:
+        return jsonify({"error": str(exc)}), 403
+    nickname_repo = NicknameRepository(db.session)
+    items = []
+    for member in service.members(room_id):
+        nickname_row = nickname_repo.find_by_user_id(member.user_id)
+        dto = member.to_dict()
+        dto["nickname"] = nickname_row.nickname if nickname_row else None
+        items.append(dto)
+    return jsonify({"items": items}), 200
+
+
+@meinchat_bp.route("/api/v1/messaging/rooms/<room_id>/invite", methods=["POST"])
+@require_auth
+def invite_to_room(room_id: str):
+    """Body: {nickname}. Any current member may invite (the service enforces
+    it). 404 unknown nickname, 403 non-member, 404 unknown room."""
+    data = request.get_json(silent=True) or {}
+    nickname = data.get("nickname")
+    if not isinstance(nickname, str) or not nickname.strip():
+        return jsonify({"error": "nickname is required"}), 400
+    row = NicknameRepository(db.session).find_by_nickname_ci(nickname.strip())
+    if row is None or row.banned or row.search_hidden:
+        return jsonify({"error": f"'{nickname}' not found"}), 404
+    try:
+        member = _room_service().invite(room_id, g.user_id, row.user_id)
+        db.session.commit()
+    except RoomServiceNotFoundError as exc:
+        db.session.rollback()
+        return jsonify({"error": str(exc)}), 404
+    except RoomServiceNotMemberError as exc:
+        db.session.rollback()
+        return jsonify({"error": str(exc)}), 403
+    return jsonify(member.to_dict()), 201
+
+
+@meinchat_bp.route("/api/v1/messaging/rooms/<room_id>/leave", methods=["POST"])
+@require_auth
+def leave_room(room_id: str):
+    try:
+        _room_service().leave(room_id, g.user_id)
+        db.session.commit()
+    except RoomServiceNotFoundError as exc:
+        db.session.rollback()
+        return jsonify({"error": str(exc)}), 404
+    except RoomServiceNotMemberError as exc:
+        db.session.rollback()
+        return jsonify({"error": str(exc)}), 403
+    return "", 204
+
+
+@meinchat_bp.route(
+    "/api/v1/messaging/rooms/<room_id>/members/<user_id>", methods=["DELETE"]
+)
+@require_auth
+def remove_room_member(room_id: str, user_id: str):
+    try:
+        _room_service().remove_member(room_id, g.user_id, user_id)
+        db.session.commit()
+    except RoomServiceNotFoundError as exc:
+        db.session.rollback()
+        return jsonify({"error": str(exc)}), 404
+    except RoomPermissionError as exc:
+        db.session.rollback()
+        return jsonify({"error": str(exc)}), 403
+    except RoomServiceNotMemberError as exc:
+        db.session.rollback()
+        return jsonify({"error": str(exc)}), 404
+    return "", 204
+
+
+@meinchat_bp.route("/api/v1/messaging/rooms/<room_id>/messages", methods=["GET"])
+@require_auth
+def list_room_messages_route(room_id: str):
+    before = request.args.get("before")
+    limit = min(int(request.args.get("limit", 50)), 200)
+    # Optional fetching device id (e2e rooms): same delivery-tracking contract
+    # as the 1:1 list — the caller's own device drives the per-device row.
+    fetching_device_id = request.args.get("device_id") or request.headers.get(
+        "X-Device-Id"
+    )
+    try:
+        msgs = _message_service().list_room_messages(
+            room_id, caller_user_id=g.user_id, before=before, limit=limit
+        )
+        if fetching_device_id:
+            _mark_e2e_delivered(
+                msgs, caller_user_id=g.user_id, device_id=fetching_device_id
+            )
+            db.session.commit()
+    except RoomNotFoundError as exc:
+        return jsonify({"error": str(exc)}), 404
+    except NotARoomMemberError as exc:
+        return jsonify({"error": str(exc)}), 403
+    return jsonify({"items": [m.to_dict() for m in msgs]}), 200
+
+
+@meinchat_bp.route("/api/v1/messaging/rooms/<room_id>/messages", methods=["POST"])
+@require_auth
+def send_room_message(room_id: str):
+    blocked = _enforce_rate("message_send")
+    if blocked is not None:
+        return blocked
+    data = request.get_json(silent=True) or {}
+
+    # Protocol is pinned on the room at creation. For an e2e_v1 room the client
+    # posts an opaque base64 `envelope_b64` (the server never sees plaintext);
+    # plain rooms post `body` (+ optional structured `meta`).
+    room = RoomRepository(db.session).find_by_id(room_id)
+    protocol = room.protocol if room is not None else "plain"
+    if protocol != "plain":
+        envelope_b64 = data.get("envelope_b64")
+        if not isinstance(envelope_b64, str):
+            return (
+                jsonify({"error": "envelope_b64 is required for this room"}),
+                400,
+            )
+        try:
+            send_body: Any = base64.b64decode(envelope_b64, validate=True)
+        except (ValueError, TypeError):
+            return jsonify({"error": "envelope_b64 must be valid base64"}), 400
+        meta = None
+    else:
+        send_body = data.get("body", "")
+        meta = data.get("meta")
+
+    try:
+        # D11 (word-based) — gate the send on a POSITIVE balance BEFORE creating
+        # the message, so a guest with no tokens never sends nor triggers the
+        # bot. No-op for a logged-in sender, a non-widget room, or economy-off.
+        # The per-word charge happens in the registered post-send hook (it bills
+        # both this question's words and the bot's answer's words).
+        _widget_room_meter().guard_send(room, g.user_id)
+        msg = _message_service().send_room_text(
+            room_id,
+            sender_user_id=g.user_id,
+            body=send_body,
+            protocol_hint=protocol,
+            meta=meta,
+        )
+        db.session.commit()
+        payload = msg.to_dict()
+        # Surface the guest's balance AFTER the question charge so the FE can
+        # render the remaining-tokens count without a second round-trip.
+        if _is_metered_guest_send(room, g.user_id):
+            payload["token_balance"] = _guest_token_balance(g.user_id)
+        return jsonify(payload), 201
+    except InsufficientGuestTokensError:
+        db.session.rollback()
+        return (
+            jsonify(
+                {
+                    "error": "not enough tokens to continue the dialogue",
+                    "code": "insufficient_tokens",
+                }
+            ),
+            402,
+        )
+    except RoomNotFoundError as exc:
+        db.session.rollback()
+        return jsonify({"error": str(exc)}), 404
+    except NotARoomMemberError as exc:
+        db.session.rollback()
+        return jsonify({"error": str(exc)}), 403
+    except MessageBodyTooLongError as exc:
+        db.session.rollback()
+        return jsonify({"error": str(exc)}), 400
+    except (ValueError, TypeError) as exc:
+        db.session.rollback()
+        return jsonify({"error": str(exc)}), 400
+
+
+@meinchat_bp.route("/api/v1/messaging/rooms/<room_id>/read", methods=["POST"])
+@require_auth
+def mark_room_read_route(room_id: str):
+    try:
+        _message_service().mark_room_read(room_id, reader_user_id=g.user_id)
+        db.session.commit()
+    except RoomNotFoundError as exc:
+        db.session.rollback()
+        return jsonify({"error": str(exc)}), 404
+    except NotARoomMemberError as exc:
+        db.session.rollback()
+        return jsonify({"error": str(exc)}), 403
+    return "", 204
+
+
+# ── /api/v1/messaging/widget/start (S86.3 D5) ───────────────────────────────
+
+
+@meinchat_bp.route("/api/v1/messaging/widget/start", methods=["POST"])
+def widget_start():
+    """Create a room for a bot-widget visitor (NO @require_auth — a public
+    widget allows an anonymous visitor; a logged_in widget verifies the bearer).
+
+    Body: {widget_slug, display_name?}. The member list + visibility are read
+    from the STORED cms widget (server-trusted, D2) — never the body. The IP
+    rate limit is applied only on the public (guest-provisioning) path."""
+    data = request.get_json(silent=True) or {}
+    widget_slug = data.get("widget_slug")
+    if not isinstance(widget_slug, str) or not widget_slug.strip():
+        return jsonify({"error": "widget_slug is required"}), 400
+    widget_slug = widget_slug.strip()
+
+    config = _widget_reader().get_active_widget_config(widget_slug)
+    if config is None:
+        return jsonify({"error": "widget not found", "code": "widget_not_found"}), 404
+
+    is_public = (config.get("visibility") or "logged_in") == "public"
+    if is_public:
+        # D12 — forensic fingerprint candidate log (IP / UA / Accept-Language).
+        # File-only, no DB, no enforcement; for later overuse analysis.
+        _log_widget_start_fingerprint(widget_slug)
+        blocked = _enforce_widget_guest_start_rate()
+        if blocked is not None:
+            return blocked
+
+    caller_user_id = None if is_public else _resolve_optional_caller_id()
+    # D12 — a returning public guest presents its own bearer; reuse its room +
+    # balance instead of provisioning + re-granting. Only honoured on the public
+    # path (a logged_in widget already uses the bearer as the caller).
+    presented_guest_user_id = _resolve_optional_caller_id() if is_public else None
+    display_name = data.get("display_name")
+
+    try:
+        result = _widget_start_service().start(
+            widget_slug,
+            display_name=display_name,
+            caller_user_id=caller_user_id,
+            presented_guest_user_id=presented_guest_user_id,
+        )
+        db.session.commit()
+    except WidgetNotFoundError:
+        db.session.rollback()
+        return jsonify({"error": "widget not found", "code": "widget_not_found"}), 404
+    except WidgetAuthRequiredError:
+        db.session.rollback()
+        return jsonify({"error": "authentication required"}), 401
+    except NicknameRequiredError:
+        db.session.rollback()
+        return (
+            jsonify({"error": "a nickname is required", "code": "nickname_required"}),
+            409,
+        )
+    except DisplayNameRequiredError:
+        db.session.rollback()
+        return jsonify({"error": "display_name is required"}), 400
+    except PublicHumanMemberError:
+        db.session.rollback()
+        return (
+            jsonify(
+                {
+                    "error": "this widget cannot invite a human member publicly",
+                    "code": "public_human_member_not_allowed",
+                }
+            ),
+            409,
+        )
+    except UnknownMemberError as exc:
+        db.session.rollback()
+        return jsonify({"error": f"'{exc}' not found"}), 404
+
+    payload = {
+        "room_id": str(result.room_id),
+        "self_nickname": result.self_nickname,
+        "members": result.members,
+    }
+    if result.access_token is not None:
+        payload["access_token"] = result.access_token
+    # D11 — surface the guest's remaining balance so the FE can render the
+    # remaining-tokens count + the "Buy tokens to continue dialogue" block.
+    if result.guest_user_id is not None and bool(
+        _economy_config()["guest_economy_enabled"]
+    ):
+        payload["token_balance"] = _guest_token_balance(result.guest_user_id)
+    return jsonify(payload), 201
+
+
+@meinchat_bp.route("/api/v1/messaging/widget/balance", methods=["GET"])
+@require_auth
+def widget_balance():
+    """Return the caller's live token balance (D11). The guest JWT minted by
+    ``widget/start`` passes ``@require_auth``, so the FE can refresh the
+    remaining-tokens count after a bot answer arrives. Returns ``token_balance``
+    to match the ``widget/start`` and room-send response shape."""
+    return jsonify({"token_balance": _guest_token_balance(g.user_id)}), 200
 
 
 # ── SSE: instant message delivery ───────────────────────────────────────────
@@ -950,7 +1723,13 @@ def sse_stream():
     # EventSource auto-reconnects, so the cap is invisible to the user.
     max_stream_s = float(cfg.get("sse_max_stream_seconds", 600))
     bus = _event_bus()
-    subscription = bus.subscribe(f"user:{user_id}", heartbeat_seconds=heartbeat_s)
+    # Fan the caller's own channel PLUS each room they belong to into ONE
+    # stream (S86.1 D5) — membership read from meinchat_room_member, so a
+    # non-member never receives a room's events. One subscription, one stream;
+    # the room channels are resolved once at connect time.
+    member_rooms = RoomRepository(db.session).list_for_user(user_id)
+    channels = [f"user:{user_id}"] + [f"room:{room.id}" for room in member_rooms]
+    subscription = bus.subscribe_many(channels, heartbeat_seconds=heartbeat_s)
 
     @stream_with_context
     def generate():
