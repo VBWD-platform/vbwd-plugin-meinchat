@@ -47,15 +47,16 @@ def _ensure_test_db(url: str) -> None:
 
 @pytest.fixture(scope="session")
 def app():
-    """Boot the full Flask app on a `<dbname>_test` database with all
-    meinchat + core tables created via `db.create_all()`. Self-bootstrapping
-    so the test doesn't depend on the api container's CMD having finished
-    `alembic upgrade heads`.
+    """Boot the full Flask app on a `<dbname>_test` database with the full
+    schema built once for the session via the shared integration-db helper.
+    Self-bootstrapping so the test doesn't depend on the api container's CMD
+    having finished `alembic upgrade heads`.
 
-    Session-scoped: the existing integration tests assume rows seeded by
-    one spec are visible to the next (e.g. `test_paged_listing_returns_correct_total`
-    expects users created in `test_prefix_search_…`). A function-scoped
-    fixture would drop_all between tests and break that assumption."""
+    Each test isolates its own data via the autouse ``_isolate_test`` fixture
+    (TRUNCATE on setup). Previously the suite assumed rows seeded by one spec
+    were visible to the next; that assumption is incompatible with sharing the
+    ``*_test`` DB (a sibling suite's mid-session DROP SCHEMA would wipe the
+    rows), so the one dependent spec was made self-seeding instead."""
     from vbwd.app import create_app
     from vbwd.extensions import db as _db
 
@@ -87,11 +88,39 @@ def app():
         except ImportError:
             pass
 
-        _db.create_all()
-        yield application
-        _db.session.remove()
-        _db.drop_all()
+        # Build the full schema exactly ONCE, resetting the public schema first
+        # (clearing any table or ENUM type left by a prior crashed run or a
+        # sibling suite sharing this ``*_test`` DB). A per-test create_all/
+        # drop_all strands standalone PG ENUM types and races other suites on
+        # the shared catalog — see vbwd/testing/integration_db.py.
+        from vbwd.testing.integration_db import reset_schema_and_create_all
+
+        reset_schema_and_create_all(_db)
+
+    yield application
+
+    with application.app_context():
         _db.engine.dispose()
+
+
+@pytest.fixture(autouse=True)
+def _isolate_test(app):
+    """Clear data before each test (the schema is built once per session).
+
+    meinchat specs seed their own users/nicknames, so a TRUNCATE on SETUP makes
+    each test deterministic and order-independent — and protects the suite from
+    a sibling suite's mid-session schema reset (DROP SCHEMA CASCADE) in the
+    shared ``*_test`` DB. The helper also re-seeds the canonical RBAC role rows
+    the TRUNCATE wipes, so user creation does not violate the role FK.
+    """
+    from vbwd.extensions import db as _db
+
+    with app.app_context():
+        from vbwd.testing.integration_db import truncate_all_tables
+
+        truncate_all_tables(_db)
+        yield
+        _db.session.remove()
 
 
 @pytest.fixture

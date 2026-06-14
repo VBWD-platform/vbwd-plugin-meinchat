@@ -118,15 +118,37 @@ def test_provisioned_bot_user_is_findable_in_nickname_search(app):
 @pytest.mark.integration
 def test_paged_listing_returns_correct_total(app):
     from vbwd.extensions import db
+    from vbwd.repositories.user_repository import UserRepository
 
     from plugins.meinchat.meinchat.repositories.nickname_repository import (
         NicknameRepository,
     )
+    from plugins.meinchat.meinchat.services.nickname_service import NicknameService
 
     with app.app_context():
+        # Self-seed the rows this spec needs so it does not depend on data left
+        # by a sibling spec — per-test isolation (TRUNCATE) clears the DB before
+        # each test, and a sibling suite sharing the ``*_test`` DB may reset the
+        # schema mid-session.
+        user_repo = UserRepository(db.session)
+        auth_service = app.container.auth_service()
+        nick_service = NicknameService(repo=NicknameRepository(db.session))
+        for email, nick in [
+            ("alice-repo@example.com", "alice-repo"),
+            ("alex-repo@example.com", "alex-repo"),
+            ("bob-repo@example.com", "bob-repo"),
+        ]:
+            existing = user_repo.find_by_email(email)
+            if existing is None:
+                auth_service.register(email=email, password="RepoTest123@")
+                existing = user_repo.find_by_email(email)
+            if nick_service.get_mine(existing.id) is None:
+                nick_service.set_nickname(existing.id, nick)
+        db.session.commit()
+
         repo = NicknameRepository(db.session)
         result = repo.list_paged(page=1, per_page=5)
-        # The seeded users from previous specs guarantee at least 3 rows.
+        # The three rows seeded above guarantee at least 3 rows.
         assert result["total"] >= 3
         assert result["page"] == 1
         assert result["per_page"] == 5
