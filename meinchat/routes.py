@@ -104,6 +104,10 @@ from plugins.meinchat.meinchat.services.token_transfer_service import (
 from plugins.meinchat.meinchat.services.guest_session_service import (
     GuestSessionService,
 )
+from plugins.meinchat.meinchat.services.guest_token_admin_service import (
+    GuestNotFoundError,
+    GuestTokenAdminService,
+)
 from plugins.meinchat.meinchat.services.widget_start_service import (
     DisplayNameRequiredError,
     NicknameRequiredError,
@@ -607,6 +611,20 @@ def _is_metered_guest_send(room, sender_user_id) -> bool:
 def _guest_token_balance(user_id) -> int:
     """The guest's remaining token balance for the FE to render the buy block."""
     return current_app.container.token_service().get_balance(user_id)
+
+
+def _guest_token_admin_service() -> GuestTokenAdminService:
+    """Admin top-up / reset of an existing widget guest's core token balance.
+
+    Balances route through the core TokenService (single source of truth);
+    guests are read from meinchat's GuestSessionRepository and enriched with the
+    nickname directory. Mirrors the other request-scoped factories (db.session)."""
+    return GuestTokenAdminService(
+        token_service=current_app.container.token_service(),
+        guest_session_repo=GuestSessionRepository(db.session),
+        resolve_user_role=_resolve_user_role,
+        nickname_repo=NicknameRepository(db.session),
+    )
 
 
 def _resolve_optional_caller_id():
@@ -1942,3 +1960,107 @@ def admin_list_transfers():
         ),
         200,
     )
+
+
+# ── guest token balances (top-up / reset existing widget guests) ─────────────
+
+
+def _parse_guest_token_body():
+    """Validate the shared {mode, amount} body for the guest-token writes.
+
+    Returns ``(mode, amount)`` where ``amount`` defaults to the configured
+    ``guest_initial_tokens`` when omitted. Raises ``ValueError`` with a
+    user-facing message on a bad mode / non-int amount."""
+    payload = request.get_json(silent=True) or {}
+    mode = payload.get("mode")
+    if mode not in ("topup", "reset"):
+        raise ValueError("mode must be 'topup' or 'reset'")
+    if "amount" in payload and payload["amount"] is not None:
+        amount = payload["amount"]
+        if isinstance(amount, bool) or not isinstance(amount, int):
+            raise ValueError("amount must be an integer")
+    else:
+        amount = int(_economy_config()["guest_initial_tokens"])
+    return mode, amount
+
+
+@meinchat_bp.route("/api/v1/admin/meinchat/guests", methods=["GET"])
+@require_auth
+@require_admin
+@require_permission("meinchat.guests.manage")
+def admin_list_guests():
+    """Paged, distinct-by-guest listing with each guest's live core token
+    balance, so the admin can see who is out of tokens and top them up."""
+    try:
+        page = max(1, int(request.args.get("page", 1)))
+        per_page = max(1, min(200, int(request.args.get("per_page", 50))))
+    except (TypeError, ValueError):
+        return jsonify({"error": "page and per_page must be integers"}), 400
+
+    query = (request.args.get("q") or "").strip() or None
+    result = _guest_token_admin_service().list_guests(
+        page=page, per_page=per_page, query=query
+    )
+    return jsonify(result), 200
+
+
+@meinchat_bp.route(
+    "/api/v1/admin/meinchat/guests/<guest_user_id>/tokens", methods=["POST"]
+)
+@require_auth
+@require_admin
+@require_permission("meinchat.guests.manage")
+def admin_change_guest_tokens(guest_user_id: str):
+    """Top-up or reset a single guest's balance.
+
+    Body ``{"mode": "topup"|"reset", "amount": <int>}``. ``amount`` defaults to
+    the configured ``guest_initial_tokens`` when omitted (so "reset to default"
+    is a one-click action). 400 on a bad body, 404 on an unknown guest."""
+    try:
+        mode, amount = _parse_guest_token_body()
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+
+    service = _guest_token_admin_service()
+    try:
+        if mode == "topup":
+            balance = service.topup(guest_user_id, amount)
+        else:
+            balance = service.reset(guest_user_id, amount)
+        db.session.commit()
+    except GuestNotFoundError as exc:
+        db.session.rollback()
+        return jsonify({"error": str(exc)}), 404
+    except ValueError as exc:
+        db.session.rollback()
+        return jsonify({"error": str(exc)}), 400
+
+    return jsonify({"guest_user_id": guest_user_id, "balance": balance}), 200
+
+
+@meinchat_bp.route("/api/v1/admin/meinchat/guests/tokens", methods=["POST"])
+@require_auth
+@require_admin
+@require_permission("meinchat.guests.manage")
+def admin_bulk_change_guest_tokens():
+    """Apply a top-up or reset to ALL existing widget guests at once.
+
+    Body ``{"mode": "topup"|"reset", "amount": <int>}`` (amount defaults to the
+    configured ``guest_initial_tokens``). Returns the number of guests affected."""
+    try:
+        mode, amount = _parse_guest_token_body()
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+
+    service = _guest_token_admin_service()
+    try:
+        if mode == "topup":
+            affected = service.topup_all(amount)
+        else:
+            affected = service.reset_all(amount)
+        db.session.commit()
+    except ValueError as exc:
+        db.session.rollback()
+        return jsonify({"error": str(exc)}), 400
+
+    return jsonify({"affected": affected}), 200

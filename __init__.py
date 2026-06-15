@@ -131,6 +131,11 @@ class MeinchatPlugin(BasePlugin):
                 "label": "View token-transfer log",
                 "group": "Meinchat",
             },
+            {
+                "key": "meinchat.guests.manage",
+                "label": "Manage guest token balances",
+                "group": "Meinchat",
+            },
         ]
 
     def on_enable(self) -> None:

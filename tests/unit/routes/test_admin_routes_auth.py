@@ -15,6 +15,11 @@ ADMIN_UNBAN_PATH = (
     "/api/v1/admin/meinchat/nicknames/00000000-0000-0000-0000-000000000001/unban"
 )
 ADMIN_TRANSFERS_PATH = "/api/v1/admin/meinchat/transfers"
+ADMIN_GUESTS_PATH = "/api/v1/admin/meinchat/guests"
+ADMIN_GUEST_TOKENS_PATH = (
+    "/api/v1/admin/meinchat/guests/00000000-0000-0000-0000-000000000001/tokens"
+)
+ADMIN_GUESTS_BULK_TOKENS_PATH = "/api/v1/admin/meinchat/guests/tokens"
 
 
 @pytest.mark.parametrize(
@@ -23,6 +28,9 @@ ADMIN_TRANSFERS_PATH = "/api/v1/admin/meinchat/transfers"
         ("POST", ADMIN_BAN_PATH),
         ("POST", ADMIN_UNBAN_PATH),
         ("GET", ADMIN_TRANSFERS_PATH),
+        ("GET", ADMIN_GUESTS_PATH),
+        ("POST", ADMIN_GUEST_TOKENS_PATH),
+        ("POST", ADMIN_GUESTS_BULK_TOKENS_PATH),
     ],
 )
 def test_admin_route_without_auth_returns_401(client, method, path):
