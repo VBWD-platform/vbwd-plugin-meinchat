@@ -40,16 +40,37 @@ jobs:
           repository: VBWD-platform/vbwd-plugin-email
           path: vbwd-backend/plugins/email
 
+      # cms is a SOFT dependency: meinchat's `on_enable` registers a
+      # cms-backed widget reader when `plugins.cms` is importable (else a null
+      # reader). The unit spec `test_cms_present_registers_cms_backed_reader_last`
+      # asserts the cms-backed adapter wins, so cms must be present on disk.
+      - name: Clone cms (soft dependency for the widget reader)
+        uses: actions/checkout@v4
+        with:
+          repository: VBWD-platform/vbwd-plugin-cms
+          path: vbwd-backend/plugins/cms
+
+      # meinchat_plus registers the AllMembersHaveDeviceKeys IRoomPolicy that
+      # vetoes an e2e-only room with a bot member (the privacy foot-gun). The
+      # integration spec `test_e2e_only_room_with_a_bot_member_is_vetoed`
+      # exercises that veto, so meinchat_plus must be present + enabled.
+      - name: Clone meinchat_plus (room-policy veto under test)
+        uses: actions/checkout@v4
+        with:
+          repository: VBWD-platform/vbwd-plugin-meinchat-plus
+          path: vbwd-backend/plugins/meinchat_plus
+
       - name: Pre-create empty migration dirs for sibling plugins
         # alembic.ini ships with `version_locations` for every plugin's
-        # migrations dir. In this CI only meinchat is overlaid, so the
-        # other plugin dirs don't exist on disk — and alembic refuses to
-        # start with a missing version_location, which silently kills the
-        # api container's `alembic upgrade heads` and leaves the DB empty.
-        # Empty dirs are enough: alembic finds no revisions there but
-        # also doesn't error.
+        # migrations dir. In this CI only meinchat (+ its declared deps and the
+        # cloned soft deps above) is overlaid, so the remaining plugin dirs
+        # don't exist on disk — and alembic refuses to start with a missing
+        # version_location, which silently kills the api container's
+        # `alembic upgrade heads` and leaves the DB empty. Empty dirs are
+        # enough: alembic finds no revisions there but also doesn't error.
+        # cms is no longer listed here — it is now a real clone above.
         run: |
-          for plugin_dir in taro cms ghrm booking chat shop discount; do
+          for plugin_dir in taro ghrm booking chat shop discount; do
             mkdir -p "vbwd-backend/plugins/${plugin_dir}/migrations/versions"
           done
 
@@ -69,6 +90,31 @@ jobs:
         working-directory: vbwd-backend
         run: |
           for i in $(seq 1 30); do curl -sf http://localhost:5000/api/v1/health > /dev/null 2>&1 && break; sleep 2; done
+
+      - name: Enable all present plugins
+        working-directory: vbwd-backend
+        # meinchat's `on_enable` registers the word-based per-word charge hook
+        # (IPostSendHook) and the cms-backed widget reader; meinchat_plus's
+        # `on_enable` registers the room-policy veto. Without enabling, the
+        # integration token-economy and room-veto specs see no registrations.
+        # Two passes: a plugin whose declared dependency sorts AFTER it
+        # alphabetically (meinchat → subscription) fails to enable on the
+        # first pass; the second pass enables it once the dependency is up.
+        # enable is idempotent.
+        run: |
+          EXCLUDE_FILE="ci/plugins-enable-exclude.txt"
+          for pass in 1 2; do
+            for d in plugins/*/; do
+              name=$(basename "$d")
+              [ -f "${d}__init__.py" ] || continue
+              if [ -f "$EXCLUDE_FILE" ] && grep -qxF "$name" "$EXCLUDE_FILE"; then
+                echo "Skipping CI-excluded plugin: $name"; continue
+              fi
+              docker compose exec -T api flask --app "vbwd:create_app()" plugins enable "$name" \
+                && echo "Plugin $name enabled (pass $pass)." \
+                || echo "Plugin $name already enabled or not registerable — continuing."
+            done
+          done
 
       - name: Run pre-commit (lint + unit)
         working-directory: vbwd-backend
