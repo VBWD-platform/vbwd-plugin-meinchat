@@ -15,6 +15,12 @@ from alembic.operations import Operations
 from sqlalchemy import inspect
 
 
+# This migration spec opens its OWN connection + transaction and rolls back
+# itself, so it must run WITHOUT the autouse rolled-back-session isolation
+# (which swaps ``db.engine`` for a Connection). See conftest ``no_db_isolation``.
+pytestmark = pytest.mark.no_db_isolation
+
+
 def _load_migration():
     path = os.path.join(
         os.path.dirname(__file__),

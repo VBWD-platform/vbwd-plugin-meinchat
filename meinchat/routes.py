@@ -1667,6 +1667,12 @@ def widget_start():
         _economy_config()["guest_economy_enabled"]
     ):
         payload["token_balance"] = _guest_token_balance(result.guest_user_id)
+        # Surface the admin-configured token-bundles page link so the FE points
+        # the out-of-tokens "Buy tokens" button at it. DRY fallback to
+        # DEFAULT_CONFIG (never a bare literal) when the admin left it unset.
+        payload["buy_tokens_href"] = _meinchat_config().get(
+            "buy_tokens_href", DEFAULT_CONFIG["buy_tokens_href"]
+        )
     return jsonify(payload), 201
 
 

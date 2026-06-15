@@ -28,6 +28,12 @@ CmsWidget = cms_widget_module.CmsWidget
 
 _WIDGET_SLUG = "meinchat-bot-widget"
 
+# This suite manages its own ``cms_widget`` table on a real engine connection
+# (create + TRUNCATE on its own committed connection) and cleans up that one
+# table itself, so it must run WITHOUT the autouse rolled-back-session isolation
+# (which swaps ``db.engine`` for a Connection). See conftest ``no_db_isolation``.
+pytestmark = pytest.mark.no_db_isolation
+
 
 @pytest.fixture
 def db(app):

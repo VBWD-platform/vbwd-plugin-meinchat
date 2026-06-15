@@ -110,15 +110,48 @@ def _guest_user_id_for(app, widget_slug):
 
 @pytest.fixture(autouse=True)
 def _isolate(app, monkeypatch):
+    from plugins.meinchat.meinchat.extensibility.pipeline import IPostSendHook
     from plugins.meinchat.meinchat.services.rate_limiter import (
         InMemoryCounterBackend,
         RateLimiter,
     )
+    from plugins.meinchat.meinchat.services.widget_room_meter import (
+        WidgetRoomChargeHook,
+    )
 
     original_limiter = getattr(app, "_meinchat_rate_limiter", None)
     app._meinchat_rate_limiter = RateLimiter(InMemoryCounterBackend())
+
+    # These specs assert the GUEST-only per-word charge (bots have no reply
+    # provider here). The ``IPostSendHook`` registry is process-global, so when
+    # other plugins' full-app boots ran earlier in the same pytest process it
+    # accumulates (a) ``bot_meinchat``'s ``MeinchatInboundHook`` (the bot would
+    # then answer and its answer words would ALSO be charged) and (b) DUPLICATE
+    # ``WidgetRoomChargeHook`` registrations (each session app boot re-runs
+    # meinchat's ``on_enable``), which would charge each message twice. Both
+    # corrupt the balance arithmetic. Snapshot the registry, then keep EXACTLY
+    # ONE ``WidgetRoomChargeHook`` and drop every other hook for the duration of
+    # the test; restore the real registry on teardown so no later suite is
+    # disturbed.
+    snapshot = registry.snapshot_for_tests()
+    registry.reset_for_tests(IPostSendHook)
+    charge_hook = next(
+        (
+            hook
+            for hook in snapshot.get(IPostSendHook, [])
+            if isinstance(hook, WidgetRoomChargeHook)
+        ),
+        None,
+    )
+    if charge_hook is not None:
+        registry.register(IPostSendHook, charge_hook)
+
     yield
-    registry.reset_for_tests(ICmsWidgetReader)
+
+    # Restore the exact registry state captured at setup — this drops the test's
+    # ``_install_reader`` registration AND re-instates every foreign hook we
+    # removed, so no later suite is disturbed.
+    registry.restore_for_tests(snapshot)
     app._meinchat_rate_limiter = original_limiter
 
 
@@ -627,6 +660,58 @@ def test_fresh_install_widget_start_grants_default_initial_tokens(
     assert body["token_balance"] == 20
     guest_id = _guest_user_id_for(app, "econ-fresh")
     assert _balance(app, guest_id) == 20
+
+
+@pytest.mark.integration
+def test_widget_start_surfaces_configured_buy_tokens_href(app, client, monkeypatch):
+    """When the admin sets `buy_tokens_href`, widget/start surfaces it so the FE
+    can point the out-of-tokens "Buy tokens" button at the configured page."""
+    _patch_economy(
+        app,
+        monkeypatch,
+        guest_economy_enabled=True,
+        guest_initial_tokens=20,
+        guest_token_cost_per_word=1,
+        buy_tokens_href="/pricing",
+    )
+    _make_bot(app, "econ-bot-href@example.com", "econ-assistant-href")
+    _install_reader(
+        {
+            "econ-href": {
+                "visibility": "public",
+                "member_nicknames": ["econ-assistant-href"],
+            }
+        }
+    )
+    resp = client.post(
+        "/api/v1/messaging/widget/start",
+        json={"widget_slug": "econ-href", "display_name": "Href Guest"},
+    )
+    assert resp.status_code == 201, resp.get_data(as_text=True)
+    body = resp.get_json()
+    assert body["buy_tokens_href"] == "/pricing"
+
+
+@pytest.mark.integration
+def test_fresh_install_widget_start_defaults_buy_tokens_href(app, client, monkeypatch):
+    """Empty persisted config → DEFAULT_CONFIG `buy_tokens_href` (/tokens)."""
+    _force_persisted_config(app, monkeypatch, {})
+    _make_bot(app, "econ-bot-href-def@example.com", "econ-assistant-href-def")
+    _install_reader(
+        {
+            "econ-href-def": {
+                "visibility": "public",
+                "member_nicknames": ["econ-assistant-href-def"],
+            }
+        }
+    )
+    resp = client.post(
+        "/api/v1/messaging/widget/start",
+        json={"widget_slug": "econ-href-def", "display_name": "Default Href Guest"},
+    )
+    assert resp.status_code == 201, resp.get_data(as_text=True)
+    body = resp.get_json()
+    assert body["buy_tokens_href"] == "/tokens"
 
 
 @pytest.mark.integration

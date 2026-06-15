@@ -168,5 +168,10 @@
     "min": 0,
     "max": 1000000,
     "description": "S86.3 D11 (REVISED, word-based billing): tokens charged per word. Both the guest's question words and the bot's answer words are debited from the guest (1 token = 1 word by default). 0 disables per-word charging."
+  },
+  "buy_tokens_href": {
+    "type": "string",
+    "default": "/tokens",
+    "description": "URL the bot-widget's out-of-tokens \"Buy tokens\" button links to (the token-bundles / pricing page)."
   }
 }

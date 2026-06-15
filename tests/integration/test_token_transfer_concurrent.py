@@ -23,7 +23,16 @@ from plugins.meinchat.meinchat.services.token_transfer_service import (
 )
 
 
-@pytest.mark.integration
+# This test runs two worker threads that must each hold their OWN connection +
+# transaction to genuinely contend for the sender balance row. The default
+# rolled-back-session isolation binds the whole suite to a SINGLE connection, so
+# the two threads would corrupt one shared transaction (``PendingRollbackError``).
+# Run WITHOUT that isolation — against a real engine pool — and self-clean: the
+# test reuses users by email and resets the balance through the service, so it is
+# idempotent and order-independent on the shared ``*_test`` DB.
+pytestmark = [pytest.mark.integration, pytest.mark.no_db_isolation]
+
+
 def test_two_threads_share_one_balance_row(app):
     """One pre-condition (balance=15), two transfers of 10 — exactly one wins."""
     from vbwd.extensions import db

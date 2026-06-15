@@ -80,6 +80,10 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "guest_economy_enabled": True,
     "guest_initial_tokens": 20,
     "guest_token_cost_per_word": 1,
+    # URL the bot-widget's out-of-tokens "Buy tokens" button links to (the
+    # token-bundles / pricing page). Surfaced on widget/start so the FE points
+    # the button at the admin-configured page instead of a per-widget literal.
+    "buy_tokens_href": "/tokens",
 }
 
 

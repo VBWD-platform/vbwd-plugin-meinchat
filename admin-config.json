@@ -288,6 +288,13 @@
           "min": 0,
           "max": 1000000,
           "description": "Tokens charged per word (1 token = 1 word). Both the guest's question words and the bot's answer words are debited from the guest. Set 0 to disable per-word charging."
+        },
+        {
+          "key": "buy_tokens_href",
+          "label": "Token bundles page link",
+          "component": "input",
+          "inputType": "text",
+          "description": "URL the out-of-tokens \"Buy tokens\" button links to (e.g. /tokens or a CMS pricing page)."
         }
       ]
     }
