@@ -6,6 +6,7 @@ config store. DEFAULT_CONFIG is the runtime source of truth that the
 plugin's `initialize()` merges, so the four keys must ship there with
 their documented defaults.
 """
+import importlib.util
 from typing import Dict
 from unittest.mock import MagicMock, patch
 
@@ -120,6 +121,10 @@ class TestCmsWidgetReaderRegistration:
         finally:
             registry.reset_for_tests(ICmsWidgetReader)
 
+    @pytest.mark.skipif(
+        importlib.util.find_spec("plugins.cms") is None,
+        reason="needs the cms plugin present; covered by the full --full gate / matrix",
+    )
     def test_cms_present_registers_cms_backed_reader_last(self):
         from plugins.meinchat.meinchat.extensibility import registry
         from plugins.meinchat.meinchat.extensibility.cms_widget_reader import (

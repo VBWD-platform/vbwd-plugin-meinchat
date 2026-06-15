@@ -22,6 +22,8 @@ service/repo layer (no raw SQL).
 """
 from __future__ import annotations
 
+import importlib.util
+
 import pytest
 
 from vbwd.models.enums import UserRole
@@ -29,6 +31,12 @@ from vbwd.models.enums import UserRole
 from plugins.meinchat.meinchat.extensibility import registry
 from plugins.meinchat.meinchat.extensibility.cms_widget_reader import (
     ICmsWidgetReader,
+)
+
+
+pytestmark = pytest.mark.skipif(
+    importlib.util.find_spec("plugins.bot_meinchat") is None,
+    reason="token-economy counts require bot_meinchat's answer-word charge hook; covered by the full --full gate",
 )
 
 

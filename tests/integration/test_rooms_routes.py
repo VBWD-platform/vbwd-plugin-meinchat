@@ -8,6 +8,8 @@ INSERT), per feedback_no_direct_db_for_test_data.
 """
 from __future__ import annotations
 
+import importlib.util
+
 import pytest
 
 from vbwd.models.enums import UserRole
@@ -259,6 +261,10 @@ def test_create_pins_plain_when_a_bot_is_a_member(app, client):
 
 
 @pytest.mark.integration
+@pytest.mark.skipif(
+    importlib.util.find_spec("plugins.meinchat_plus") is None,
+    reason="bot-member room veto is provided by meinchat_plus; covered by the full --full gate",
+)
 def test_e2e_only_room_with_a_bot_member_is_vetoed(app, client):
     """S86.2 D3: an *e2e-required* room (no plain fallback) with a bot member is
     vetoed with a clear error rather than silently downgraded to plain — the
