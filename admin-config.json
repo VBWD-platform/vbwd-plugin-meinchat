@@ -290,6 +290,12 @@
           "description": "Tokens charged per word (1 token = 1 word). Both the guest's question words and the bot's answer words are debited from the guest. Set 0 to disable per-word charging."
         },
         {
+          "key": "guest_charge_bot_answers",
+          "label": "Charge guest for the bot's reply words",
+          "component": "checkbox",
+          "description": "When off, a widget guest is not charged for the bot's reply words — only for their own messages; useful for sales/consultant bots. When on (default) every message in the room is charged, including the bot's answer."
+        },
+        {
           "key": "buy_tokens_href",
           "label": "Token bundles page link",
           "component": "input",

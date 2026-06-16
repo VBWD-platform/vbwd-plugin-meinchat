@@ -197,6 +197,7 @@ _ECONOMY_CONFIG_KEYS = (
     "guest_economy_enabled",
     "guest_initial_tokens",
     "guest_token_cost_per_word",
+    "guest_charge_bot_answers",
 )
 
 

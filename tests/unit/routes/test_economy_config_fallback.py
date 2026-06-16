@@ -37,6 +37,10 @@ def test_fresh_install_resolves_to_default_config(app):
         == DEFAULT_CONFIG["guest_token_cost_per_word"]
         == 1
     )
+    # Default True preserves today's behavior: the guest is charged for the
+    # bot's answer words too, with no persisted override on a fresh install.
+    assert cfg["guest_charge_bot_answers"] is True
+    assert cfg["guest_charge_bot_answers"] is DEFAULT_CONFIG["guest_charge_bot_answers"]
 
 
 def test_persisted_override_wins_over_default(app):

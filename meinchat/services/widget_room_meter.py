@@ -82,9 +82,12 @@ class WidgetRoomChargeHook:
     """Post-send per-word charge (``IPostSendHook``).
 
     Charges the room's GUEST member ``word_count × cost_per_word`` for ANY message
-    in a widget room (guest question OR bot answer). Collaborators arrive as
-    providers so each call builds them off the current request session / config
-    (the hook is registered once at plugin-enable time).
+    in a widget room (guest question OR bot answer). The ``guest_charge_bot_answers``
+    toggle (default ``True`` → today's behavior) narrows this: when ``False`` only
+    messages the guest themselves authored are billed, so a sales/consultant bot's
+    reply words are free. Collaborators arrive as providers so each call builds
+    them off the current request session / config (the hook is registered once at
+    plugin-enable time).
     """
 
     def __init__(
@@ -96,6 +99,7 @@ class WidgetRoomChargeHook:
         resolve_user_role: Callable[[UUID], Optional[UserRole]],
         economy_enabled_provider: Callable[[], bool],
         cost_per_word_provider: Callable[[], int],
+        charge_bot_answers_provider: Callable[[], bool],
     ) -> None:
         self._token_service_provider = token_service_provider
         self._room_provider = room_provider
@@ -103,6 +107,7 @@ class WidgetRoomChargeHook:
         self._resolve_user_role = resolve_user_role
         self._economy_enabled_provider = economy_enabled_provider
         self._cost_per_word_provider = cost_per_word_provider
+        self._charge_bot_answers_provider = charge_bot_answers_provider
 
     def on_sent(self, row, *, fetched_by=None) -> None:
         """Debit the room's guest for this message's words. Never raises — a sent
@@ -130,6 +135,13 @@ class WidgetRoomChargeHook:
         guest_user_id = self._guest_member_id(room_id)
         if guest_user_id is None:
             return
+        # D11 toggle: when `guest_charge_bot_answers` is off, only the guest's
+        # OWN words are billed — a message the guest did not author (the bot's
+        # answer) is free. When on, every message is charged regardless of
+        # sender (today's behavior, preserved by the default true).
+        if not self._charge_bot_answers_provider():
+            if getattr(row, "sender_user_id", None) != guest_user_id:
+                return
 
         token_service = self._token_service_provider()
         balance = token_service.get_balance(guest_user_id)

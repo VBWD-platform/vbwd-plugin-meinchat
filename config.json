@@ -169,6 +169,11 @@
     "max": 1000000,
     "description": "S86.3 D11 (REVISED, word-based billing): tokens charged per word. Both the guest's question words and the bot's answer words are debited from the guest (1 token = 1 word by default). 0 disables per-word charging."
   },
+  "guest_charge_bot_answers": {
+    "type": "boolean",
+    "default": true,
+    "description": "S86.3 D11: when on (default, today's behavior) the guest is charged per word for EVERY message in its widget room, including the bot's answer words. When off, the guest is charged only for the words it authored — the bot's reply is free. Useful for sales/consultant bots whose long pitch should not drain the prospect's balance."
+  },
   "buy_tokens_href": {
     "type": "string",
     "default": "/tokens",

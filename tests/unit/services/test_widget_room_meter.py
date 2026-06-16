@@ -160,6 +160,7 @@ def _hook(
     *,
     enabled=True,
     cost_per_word=1,
+    charge_bot_answers=True,
     roles=None,
 ):
     roles = roles or {}
@@ -170,11 +171,12 @@ def _hook(
         resolve_user_role=lambda uid: roles.get(uid),
         economy_enabled_provider=lambda: enabled,
         cost_per_word_provider=lambda: cost_per_word,
+        charge_bot_answers_provider=lambda: charge_bot_answers,
     )
 
 
-def _message(room, body):
-    return SimpleNamespace(room_id=room.id, body=body)
+def _message(room, body, *, sender_user_id=None):
+    return SimpleNamespace(room_id=room.id, body=body, sender_user_id=sender_user_id)
 
 
 def test_charges_guest_for_a_guest_question_by_word():
@@ -293,3 +295,69 @@ def test_no_op_for_a_one_to_one_message_with_no_room():
     hook.on_sent(SimpleNamespace(room_id=None, body="hi there"))
 
     assert token_service.debits == []
+
+
+# ── guest_charge_bot_answers toggle (default true preserves today's behavior) ─
+
+
+def test_bot_answer_still_charged_when_charge_bot_answers_default_true():
+    """Default (charge_bot_answers=True) preserves TODAY's behavior exactly: a
+    BOT-authored message in a widget room still debits the guest per word."""
+    guest_id = uuid4()
+    room, members = _room_with_guest(guest_id)
+    bot_id = members[1].user_id
+    token_service = _FakeTokenService({guest_id: 10})
+    hook = _hook(
+        token_service,
+        room,
+        members,
+        charge_bot_answers=True,
+        roles={guest_id: UserRole.GUEST, bot_id: UserRole.BOT},
+    )
+
+    # Authored by the bot, not the guest.
+    hook.on_sent(_message(room, "shipping is five euros", sender_user_id=bot_id))
+
+    assert token_service.debits == [(guest_id, 4)]
+
+
+def test_bot_answer_free_when_charge_bot_answers_false():
+    """charge_bot_answers=False: a message NOT authored by the guest (the bot's
+    answer) is free — the guest is not debited."""
+    guest_id = uuid4()
+    room, members = _room_with_guest(guest_id)
+    bot_id = members[1].user_id
+    token_service = _FakeTokenService({guest_id: 10})
+    hook = _hook(
+        token_service,
+        room,
+        members,
+        charge_bot_answers=False,
+        roles={guest_id: UserRole.GUEST, bot_id: UserRole.BOT},
+    )
+
+    hook.on_sent(_message(room, "shipping is five euros", sender_user_id=bot_id))
+
+    assert token_service.debits == []
+    assert token_service.get_balance(guest_id) == 10
+
+
+def test_guest_own_words_still_charged_when_charge_bot_answers_false():
+    """charge_bot_answers=False: the guest still pays for the words THEY authored
+    (a message whose sender is the guest member)."""
+    guest_id = uuid4()
+    room, members = _room_with_guest(guest_id)
+    bot_id = members[1].user_id
+    token_service = _FakeTokenService({guest_id: 10})
+    hook = _hook(
+        token_service,
+        room,
+        members,
+        charge_bot_answers=False,
+        roles={guest_id: UserRole.GUEST, bot_id: UserRole.BOT},
+    )
+
+    hook.on_sent(_message(room, "how much is shipping", sender_user_id=guest_id))  # 4
+
+    assert token_service.debits == [(guest_id, 4)]
+    assert token_service.get_balance(guest_id) == 6

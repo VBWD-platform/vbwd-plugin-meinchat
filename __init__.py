@@ -80,6 +80,12 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "guest_economy_enabled": True,
     "guest_initial_tokens": 20,
     "guest_token_cost_per_word": 1,
+    # When True (default → preserves today's behavior) the guest is charged for
+    # EVERY message in its widget room, including the bot's answer words. When
+    # False the guest pays only for the words IT authored — the bot's reply is
+    # free. Useful for sales/consultant bots whose long pitch should not drain
+    # the very prospect it is trying to convert.
+    "guest_charge_bot_answers": True,
     # URL the bot-widget's out-of-tokens "Buy tokens" button links to (the
     # token-bundles / pricing page). Surfaced on widget/start so the FE points
     # the button at the admin-configured page instead of a per-widget literal.
@@ -330,6 +336,15 @@ class MeinchatPlugin(BasePlugin):
                     economy_config().get(
                         "guest_token_cost_per_word",
                         DEFAULT_CONFIG["guest_token_cost_per_word"],
+                    )
+                ),
+                # Persisted override wins; absent key falls back to the plugin's
+                # DEFAULT_CONFIG (True) so a fresh install preserves today's
+                # behavior (guest charged for the bot's answer words too).
+                charge_bot_answers_provider=lambda: bool(
+                    economy_config().get(
+                        "guest_charge_bot_answers",
+                        DEFAULT_CONFIG["guest_charge_bot_answers"],
                     )
                 ),
             ),
