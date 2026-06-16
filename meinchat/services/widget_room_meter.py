@@ -138,9 +138,12 @@ class WidgetRoomChargeHook:
         # D11 toggle: when `guest_charge_bot_answers` is off, only the guest's
         # OWN words are billed — a message the guest did not author (the bot's
         # answer) is free. When on, every message is charged regardless of
-        # sender (today's behavior, preserved by the default true).
+        # sender (today's behavior, preserved by the default true). The Message
+        # row exposes its author as `sender_id` (the model column), so compare
+        # against that — NOT a `sender_user_id` attribute, which the row never
+        # carries (reading it returned None and silently skipped every charge).
         if not self._charge_bot_answers_provider():
-            if getattr(row, "sender_user_id", None) != guest_user_id:
+            if getattr(row, "sender_id", None) != guest_user_id:
                 return
 
         token_service = self._token_service_provider()

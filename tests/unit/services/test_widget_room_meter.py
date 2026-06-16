@@ -176,7 +176,9 @@ def _hook(
 
 
 def _message(room, body, *, sender_user_id=None):
-    return SimpleNamespace(room_id=room.id, body=body, sender_user_id=sender_user_id)
+    # The production Message row exposes its author as `sender_id` (the model
+    # column), so the fake must too — the charge hook reads `sender_id`.
+    return SimpleNamespace(room_id=room.id, body=body, sender_id=sender_user_id)
 
 
 def test_charges_guest_for_a_guest_question_by_word():
