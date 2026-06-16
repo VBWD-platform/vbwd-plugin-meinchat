@@ -140,6 +140,15 @@ def _isolate(app):
     )
     if charge_hook is not None:
         registry.register(IPostSendHook, charge_hook)
+    else:
+        # No WidgetRoomChargeHook in the snapshot — this happens in a clean CI
+        # process when this file runs before any other suite's app-boot
+        # registered it (locally the registry has accumulated one, so the branch
+        # above runs and this is a no-op). Register a fresh one via the plugin so
+        # the per-word charge fires deterministically regardless of test order.
+        meinchat_plugin = app.plugin_manager.get_plugin("meinchat")
+        with app.app_context():
+            meinchat_plugin._register_widget_charge_hook()
 
     yield
 
