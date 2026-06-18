@@ -108,6 +108,9 @@ from plugins.meinchat.meinchat.services.guest_token_admin_service import (
     GuestNotFoundError,
     GuestTokenAdminService,
 )
+from plugins.meinchat.meinchat.services.session_cleanup_service import (
+    SessionCleanupService,
+)
 from plugins.meinchat.meinchat.services.widget_start_service import (
     DisplayNameRequiredError,
     NicknameRequiredError,
@@ -625,6 +628,53 @@ def _guest_token_admin_service() -> GuestTokenAdminService:
         guest_session_repo=GuestSessionRepository(db.session),
         resolve_user_role=_resolve_user_role,
         nickname_repo=NicknameRepository(db.session),
+    )
+
+
+def _reset_token_balance(user_id, target: int) -> int:
+    """Set ``user_id``'s core balance to ``target``, returning the new balance.
+
+    Reuses ``GuestTokenAdminService.reset`` (the single balance-reset path) for
+    an existing widget guest; when that path 404s because the target is a
+    REGISTERED user (not a guest), the balance is set directly via the core
+    TokenService by crediting / debiting the signed delta — so the cleanup
+    works for guests and registered users alike (Liskov: same observable
+    'balance is now target' contract for both)."""
+    try:
+        return _guest_token_admin_service().reset(user_id, target)
+    except GuestNotFoundError:
+        token_service = current_app.container.token_service()
+        current_balance = token_service.get_balance(user_id)
+        delta = target - current_balance
+        if delta > 0:
+            token_service.credit_tokens(
+                user_id,
+                delta,
+                transaction_type=TokenTransactionType.ADJUSTMENT,
+                description="meinchat admin session-cleanup balance reset",
+            )
+        elif delta < 0:
+            token_service.debit_tokens(
+                user_id,
+                -delta,
+                transaction_type=TokenTransactionType.ADJUSTMENT,
+                description="meinchat admin session-cleanup balance reset",
+            )
+        return token_service.get_balance(user_id)
+
+
+def _session_cleanup_service() -> SessionCleanupService:
+    """Admin cleanup of meinchat chat + guest session data. Deletes route
+    through db.session (relying on the FK cascades); the balance reset routes
+    through the core TokenService (single source of truth)."""
+    return SessionCleanupService(
+        session=db.session,
+        token_service=current_app.container.token_service(),
+        guest_session_repo=GuestSessionRepository(db.session),
+        conversation_repo=ConversationRepository(db.session),
+        room_repo=RoomRepository(db.session),
+        guest_initial_tokens=int(_economy_config()["guest_initial_tokens"]),
+        reset_balance=_reset_token_balance,
     )
 
 
@@ -2065,3 +2115,39 @@ def admin_bulk_change_guest_tokens():
         return jsonify({"error": str(exc)}), 400
 
     return jsonify({"affected": affected}), 200
+
+
+@meinchat_bp.route("/api/v1/admin/meinchat/sessions/clear-guests", methods=["POST"])
+@require_auth
+@require_admin
+@require_permission("meinchat.guests.manage")
+def admin_clear_guest_sessions():
+    """Wipe EVERY guest's meinchat data: their conversations + rooms (with
+    cascaded messages / attachments / members) and their guest-session rows.
+    Idempotent. Returns the deleted counts."""
+    try:
+        counts = _session_cleanup_service().clear_all_guest_sessions()
+        db.session.commit()
+    except Exception:
+        db.session.rollback()
+        raise
+    return jsonify(counts), 200
+
+
+@meinchat_bp.route(
+    "/api/v1/admin/meinchat/users/<user_id>/sessions/clear", methods=["POST"]
+)
+@require_auth
+@require_admin
+@require_permission("meinchat.guests.manage")
+def admin_clear_user_sessions(user_id: str):
+    """Wipe ONE user's meinchat conversations + rooms + guest-session rows and
+    reset their core token balance to the configured guest default. Works for a
+    guest or a registered user. Idempotent. Returns deleted counts + balance."""
+    try:
+        counts = _session_cleanup_service().clear_user_sessions(user_id)
+        db.session.commit()
+    except Exception:
+        db.session.rollback()
+        raise
+    return jsonify(counts), 200
