@@ -49,7 +49,7 @@ jobs:
         # Empty dirs are enough: alembic finds no revisions there but
         # also doesn't error.
         run: |
-          for plugin_dir in taro cms ghrm booking chat shop discount; do
+          for plugin_dir in tarot cms ghrm booking chat shop discount; do
             mkdir -p "vbwd-backend/plugins/${plugin_dir}/migrations/versions"
           done
 

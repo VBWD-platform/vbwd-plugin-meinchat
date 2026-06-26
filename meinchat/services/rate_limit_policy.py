@@ -3,7 +3,7 @@
 Pure data: takes the merged meinchat plugin config dict, returns numbers.
 No Flask, no Redis, no I/O.
 
-Config key shape (flat, taro-style — see plugins/taro/admin-config.json):
+Config key shape (flat, tarot-style — see plugins/tarot/admin-config.json):
     rate_<category>_per_window           # baseline (web + unknown platforms)
     rate_<category>_window_seconds
     rate_<platform>_<category>_per_window  # platform override (ios, …)
