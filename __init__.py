@@ -100,7 +100,7 @@ class MeinchatPlugin(BasePlugin):
     def metadata(self) -> PluginMetadata:
         return PluginMetadata(
             name="meinchat",
-            version="26.6",
+            version="26.6.1",
             author="VBWD Team",
             description=(
                 "User nickname directory, address book, 1-on-1 messaging "
