@@ -7,7 +7,7 @@ from typing import Any, Dict, Optional, TYPE_CHECKING
 
 from flask import current_app
 
-from vbwd.plugins.base import BasePlugin, PluginMetadata
+from vbwd.plugins.base import BasePlugin, PluginMetadata, PublicRouteDeclaration
 
 
 if TYPE_CHECKING:
@@ -114,6 +114,22 @@ class MeinchatPlugin(BasePlugin):
         if config:
             merged.update(config)
         super().initialize(merged)
+
+    def declare_public_routes(self) -> PublicRouteDeclaration:
+        """Public SSE stream + the anonymous chat-widget conversation start.
+
+        The SSE stream is authenticated by a verified ``stream_token`` query
+        param (an ``EventSource`` cannot send headers); the widget start supports
+        anonymous visitors.
+        """
+        return PublicRouteDeclaration(
+            read={
+                "/api/v1/messaging/stream": "SSE stream; auth'd by a verified stream_token query param (no headers).",
+            },
+            mutation={
+                "/api/v1/messaging/widget/start": "Public chat-widget conversation start (anonymous visitor support).",
+            },
+        )
 
     def get_blueprint(self) -> Optional["Blueprint"]:
         from plugins.meinchat.meinchat.routes import meinchat_bp
