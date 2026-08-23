@@ -93,3 +93,12 @@ docker compose exec api python /app/plugins/meinchat/populate_db.py
 ```
 
 Idempotent: re-running prints "already" everywhere; no duplicate rows.
+
+## Documentation
+
+Full platform documentation lives at **[vbwd.cc/docs](https://vbwd.cc/docs)**.
+
+- [Plugin system](https://vbwd.cc/docs-plugin-system) — how backend plugins are registered, enabled, and configured
+- [Chat / meinchat](https://vbwd.cc/docs-core-meinchat) — documentation for this plugin's domain
+- [Architecture](https://vbwd.cc/docs-architecture) — platform layering and the core-agnosticism rule
+- [Getting started](https://vbwd.cc/docs-getting-started) — install a VBWD instance and enable plugins
